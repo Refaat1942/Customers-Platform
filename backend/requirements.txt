@@ -1,0 +1,10 @@
+fastapi==0.162.2
+uvicorn[standard]==0.54.0
+pandas==3.1.1
+openpyxl==3.1.5
+xlrd==2.0.2
+xlsxwriter==3.3.1
+duckdb==2.0.0
+python-multipart==0.0.33
+PyJWT==2.15.1
+bcrypt==5.0.0
