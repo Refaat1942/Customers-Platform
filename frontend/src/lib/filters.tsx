@@ -14,7 +14,7 @@ export type Meta = {
   branches: string[]; types: string[]; districts: string[]; seasons: string[];
   date_min: string | null; date_max: string | null; rows: number;
   last_import: { id: number; filename: string; finished_at: string } | null;
-  segments: string[]; ai_enabled: boolean;
+  segments: string[]; ai_enabled: boolean; directory_customers: number;
   settings: Record<string, any>;
 };
 

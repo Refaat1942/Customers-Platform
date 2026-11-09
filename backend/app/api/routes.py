@@ -432,6 +432,36 @@ def get_customer(cid: str, f: an.Filters = Depends(filters), export: bool = Fals
     return xlsx_response(ex.workbook(sheets, lang), f"customer_{cid}.xlsx")
 
 
+# ====================================================================== customer base
+@router.get("/directory/summary")
+def get_directory_summary(user: dict = Depends(require("customers"))):
+    return db.cached(("dir_summary", tuple(user["branches"])),
+                     lambda: an.directory_summary(user["branches"] or None))
+
+
+@router.get("/directory")
+def get_directory(user: dict = Depends(require("customers")), q: str | None = None,
+                  region: list[str] = Query(default=[]), city: list[str] = Query(default=[]),
+                  district: list[str] = Query(default=[]), bought: bool | None = None,
+                  invalid: bool = False, sort: str = "name", desc: bool = False,
+                  page: int = Query(1, ge=1), page_size: int = Query(50, ge=1, le=500),
+                  export: bool = False, lang: str = "en"):
+    if export:
+        need_export(user)
+    res = an.directory_list(user["branches"] or None, q=q, region=region, city=city,
+                            district=district, bought=bought, invalid=invalid, sort=sort,
+                            desc=desc, page=page, page_size=page_size, limit_all=export)
+    protect(res["rows"], user)
+    if not export:
+        return res
+    audit(user, "export", f"customer list ({res['total']} customers)")
+    cols = ["phone", "name", "region", "city", "district", "area", "address", "email",
+            "phone_valid", "bought", "total_spent", "visits", "last_visit"]
+    sheet = "قاعدة العملاء" if lang == "ar" else "Customer base"
+    return xlsx_response(ex.workbook([(sheet, ex.frame(res["rows"], cols, lang))], lang, sheet),
+                         "customer_base.xlsx")
+
+
 # ====================================================================== products
 @router.get("/products")
 def get_products(f: an.Filters = Depends(filters), q: str | None = None, sort: str = "sales",

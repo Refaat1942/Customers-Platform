@@ -49,5 +49,5 @@ def normalize_egy_phone(x) -> str:
     return s
 
 
-def is_valid_egy_mobile(s: str) -> bool:
-    return len(s) == 11 and s[:3] in VALID_PREFIXES
+def is_valid_egy_mobile(s) -> bool:
+    return isinstance(s, str) and len(s) == 11 and s[:3] in VALID_PREFIXES

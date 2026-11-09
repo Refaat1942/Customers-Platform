@@ -649,6 +649,90 @@ def products(f: Filters, *, q=None, sort="sales", desc=True, page=1, page_size=5
     return {"rows": rows, "total": total, "by_category": by_category}
 
 
+# ====================================================================== customer base (lists)
+DIRECTORY_SORTS = {"name", "phone", "region", "city", "district", "area", "total_spent", "visits",
+                   "last_visit", "updated_at"}
+
+
+def _directory_scope(allowed_branches) -> tuple[str, list]:
+    """Branch-limited users only see listed customers who bought in their branches."""
+    if not allowed_branches:
+        return "TRUE", []
+    return "d.phone IN (SELECT phone FROM sales WHERE branch = ANY(?))", [list(allowed_branches)]
+
+
+def directory_summary(allowed_branches=None) -> dict:
+    cur = db.cursor()
+    scope, sp = _directory_scope(allowed_branches)
+    base = f"""WITH b AS (SELECT DISTINCT phone FROM sales WHERE phone IS NOT NULL),
+               d AS (SELECT d.*, (b.phone IS NOT NULL) AS bought FROM customer_directory d
+                     LEFT JOIN b USING (phone) WHERE {scope})"""
+    k = db.one(cur, f"""{base} SELECT count(*) AS total,
+        count(*) FILTER (WHERE phone_valid) AS valid_phones,
+        count(*) FILTER (WHERE NOT phone_valid) AS invalid_phones,
+        count(*) FILTER (WHERE name IS NOT NULL) AS with_name,
+        count(*) FILTER (WHERE address IS NOT NULL) AS with_address,
+        count(*) FILTER (WHERE district IS NOT NULL) AS with_district,
+        count(*) FILTER (WHERE city IS NOT NULL) AS with_city,
+        count(*) FILTER (WHERE email IS NOT NULL) AS with_email,
+        count(*) FILTER (WHERE bought) AS bought,
+        count(*) FILTER (WHERE NOT bought) AS never_bought,
+        max(updated_at) AS updated_at FROM d""", sp)
+
+    def by(col, limit=30):
+        return db.rows(cur, f"""{base} SELECT coalesce({col}, '—') AS label, count(*) AS customers,
+            count(*) FILTER (WHERE bought) AS bought,
+            {R("100.0 * count(*) / nullif(sum(count(*)) OVER (), 0)")} AS share
+            FROM d GROUP BY 1 ORDER BY customers DESC LIMIT {limit}""", sp)
+
+    return {"kpis": k, "by_region": by("region"), "by_city": by("city"), "by_district": by("district"),
+            "by_area": by("area"), "by_gender": by("gender", 10),
+            "sales_rows": cur.execute("SELECT count(*) FROM sales").fetchone()[0]}
+
+
+def directory_list(allowed_branches=None, *, q=None, region=None, city=None, district=None,
+                   bought=None, invalid=False, sort="name", desc=False, page=1, page_size=50,
+                   limit_all=False) -> dict:
+    cur = db.cursor()
+    scope, sp = _directory_scope(allowed_branches)
+    conds, p = [scope], list(sp)
+    if q:
+        conds.append("(d.phone ILIKE ? OR d.name ILIKE ? OR d.address ILIKE ? OR d.district ILIKE ? "
+                     "OR d.city ILIKE ? OR d.area ILIKE ?)")
+        p += [f"%{q}%"] * 6
+    for col, v in (("region", region), ("city", city), ("district", district)):
+        if v:
+            conds.append(f"d.{col} = ANY(?)")
+            p.append(list(v))
+    if bought is True:
+        conds.append("s.phone IS NOT NULL")
+    elif bought is False:
+        conds.append("s.phone IS NULL")
+    if invalid:
+        conds.append("NOT d.phone_valid")
+    sort = sort if sort in DIRECTORY_SORTS else "name"
+    sql = f"""WITH s AS (SELECT phone, {R("sum(item_price)")} AS total_spent,
+                   count(DISTINCT visit_key) AS visits, max(day) AS last_visit
+                 FROM sales WHERE phone IS NOT NULL GROUP BY phone)
+        SELECT d.phone, d.name, d.region, d.city, d.district, d.area, d.address, d.email,
+               d.phone_valid, d.updated_at, s.total_spent, s.visits, s.last_visit,
+               (s.phone IS NOT NULL) AS bought, count(*) OVER () AS _total
+        FROM customer_directory d LEFT JOIN s USING (phone)
+        WHERE {" AND ".join(conds)}
+        ORDER BY {sort} {"DESC" if desc else "ASC"} NULLS LAST, d.phone"""
+    sql += " LIMIT 1048000" if limit_all else \
+        f" LIMIT {int(page_size)} OFFSET {int((page - 1) * page_size)}"
+    rows = db.rows(cur, sql, p)
+    total = rows[0]["_total"] if rows else 0
+    for r in rows:
+        r.pop("_total", None)
+        r["cid"] = cid(r["phone"]) if r["bought"] else None
+    filters = {c: [x[0] for x in cur.execute(
+        f"SELECT DISTINCT {c} FROM customer_directory WHERE {c} IS NOT NULL ORDER BY 1 LIMIT 500"
+    ).fetchall()] for c in ("region", "city", "district")} if page == 1 and not limit_all else None
+    return {"rows": rows, "total": total, "filters": filters}
+
+
 # ====================================================================== area
 def area(f: Filters, min_customers: int = 5) -> dict:
     cur = db.cursor()

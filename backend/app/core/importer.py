@@ -409,8 +409,8 @@ def build_frame(raw: pd.DataFrame, mapping: dict) -> tuple[pd.DataFrame, dict]:
     # phone (normalise unique values only - fast on big files)
     ph = src("phone")
     uniq = {v: normalize_egy_phone(v) for v in pd.unique(ph.astype(str))}
-    out["phone"] = ph.astype(str).map(uniq).replace("", None)
-    out["phone_valid"] = out["phone"].map(lambda p: bool(p) and is_valid_egy_mobile(p))
+    out["phone"] = ph.astype(str).map(uniq).map(lambda v: v or None).astype(object)
+    out["phone_valid"] = out["phone"].map(is_valid_egy_mobile)
     stats["invalid_phones"] = int((out["phone"].notna() & ~out["phone_valid"]).sum())
 
     out["invoice_date"] = _parse_dates(src("invoice_date"))
@@ -590,12 +590,12 @@ def build_customer_frame(raw: pd.DataFrame, mapping: dict) -> tuple[pd.DataFrame
     ph = raw[mapping["phone"]].astype(str)
     uniq = {v: normalize_egy_phone(v) for v in pd.unique(ph)}
     out = pd.DataFrame(index=raw.index)
-    out["phone"] = ph.map(uniq).replace("", None)
-    out["phone_valid"] = out["phone"].map(lambda p: bool(p) and is_valid_egy_mobile(p))
+    out["phone"] = ph.map(uniq).map(lambda v: v or None).astype(object)
+    out["phone_valid"] = out["phone"].map(is_valid_egy_mobile)
     stats["invalid_phones"] = int((out["phone"].notna() & ~out["phone_valid"]).sum())
 
     first, last = col("first_name"), col("last_name")
-    joined = (first.fillna("") + " " + last.fillna("")).str.strip().replace("", None)
+    joined = (first.fillna("") + " " + last.fillna("")).str.strip().map(lambda v: v or None)
     out["first_name"], out["last_name"] = first, last
     out["name"] = col("name").fillna(joined)
 
@@ -604,7 +604,7 @@ def build_customer_frame(raw: pd.DataFrame, mapping: dict) -> tuple[pd.DataFrame
     parts = [col(f) for f in ("building", "street", "landmark", "area", "district", "city",
                               "region")]
     built = pd.concat(parts, axis=1).apply(
-        lambda r: ", ".join(v for v in r if isinstance(v, str) and v), axis=1).replace("", None) if len(raw) else None
+        lambda r: ", ".join(v for v in r if isinstance(v, str) and v), axis=1).map(lambda v: v or None) if len(raw) else None
     out["address"] = col("address").fillna(built) if len(raw) else None
     # district: from the file, else the area, else guessed from the address
     guessed = out["address"].map(lambda a: None if a is None else

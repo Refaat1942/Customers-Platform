@@ -3,7 +3,7 @@ import { Link, NavLink, Outlet, useLocation } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import clsx from "clsx";
 import {
-  BarChart3, Bot, Package, Briefcase, FileClock, Globe, LayoutDashboard, LogOut, MapPin, Menu, PhoneCall,
+  BarChart3, BookUser, Bot, Package, Briefcase, FileClock, Globe, LayoutDashboard, LogOut, MapPin, Menu, PhoneCall,
   Receipt, Settings, Sparkles, Upload, UserCog, UserRound, Users, X,
 } from "lucide-react";
 import { useAuth } from "../lib/auth";
@@ -17,6 +17,7 @@ const ANALYSIS: Item[] = [
   { to: "/", key: "dashboard", perm: "dashboard", icon: LayoutDashboard },
   { to: "/insights", key: "insights", perm: "insights", icon: Sparkles },
   { to: "/customers", key: "customers", perm: "customers", icon: Users },
+  { to: "/customer-base", key: "base", perm: "customers", icon: BookUser },
   { to: "/recommendations", key: "recommendations", perm: "recommendations", icon: PhoneCall },
   { to: "/business", key: "business", perm: "business", icon: Briefcase },
   { to: "/products", key: "products", perm: "business", icon: Package },

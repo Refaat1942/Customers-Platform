@@ -344,3 +344,26 @@ def test_two_files_imported_together(client):
         time.sleep(0.1)
     assert [x["status"] for x in st] == ["done", "done"], st
     assert all(x["rows_imported"] > 0 for x in st)
+
+
+def test_directory_page(client):
+    s = client.get("/api/directory/summary").json()
+    assert s["kpis"]["total"] >= 3 and s["by_city"]
+    assert s["kpis"]["bought"] + s["kpis"]["never_bought"] == s["kpis"]["total"]
+    lst = client.get("/api/directory", params={"bought": "false"}).json()
+    assert lst["total"] >= 1 and all(not r["bought"] for r in lst["rows"])
+    assert lst["filters"]["city"]
+    assert client.get("/api/directory", params={"export": "true"}).content[:2] == b"PK"
+
+
+def test_sales_rows_with_empty_phone(client):
+    import pandas as pd
+    from datetime import datetime
+    df = pd.DataFrame({"Mobile": ["01012345678", None, "", "01198765432"],
+                       "Date": [datetime(2025, 3, 1)] * 4, "Net Amount": [10.5, 20.0, 30.0, 40.25]})
+    buf = io.BytesIO()
+    df.to_excel(buf, index=False)
+    up = upload(client, buf.getvalue(), "Car 2024 All.xlsx")
+    st = _commit_and_wait(client, up, "sales", "merge", up["mappings"]["sales"])
+    assert st["status"] == "done", st
+    assert st["rows_imported"] == 4  # rows without a phone still count in total sales

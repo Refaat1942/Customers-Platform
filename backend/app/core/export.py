@@ -48,6 +48,13 @@ LABELS = {
     "season": ("Season", "الموسم"),
     "item": ("Item", "الصنف"),
     "metric": ("Metric", "المؤشر"),
+    "region": ("Region", "المحافظة"),
+    "city": ("City", "المدينة"),
+    "area": ("Area", "المنطقة الفرعية"),
+    "address": ("Address", "العنوان"),
+    "email": ("Email", "البريد"),
+    "bought": ("Has Purchases", "له مشتريات"),
+    "updated_at": ("Updated", "آخر تحديث"),
     "max_invoice": ("Highest Invoice", "أعلى فاتورة"),
     "min_invoice": ("Lowest Invoice", "أقل فاتورة"),
     "median_invoice": ("Typical Invoice", "الفاتورة المعتادة"),
@@ -124,7 +131,7 @@ VALUES = {
 ACTIONS = {"active": "keep_engaged", "attention": "send_offer", "inactive": "call_customer",
            "unknown": "call_customer"}
 
-TRANSLATED_COLS = {"status", "action", "high_value", "loyal", "phone_valid", "top_season", "season",
+TRANSLATED_COLS = {"status", "action", "high_value", "loyal", "phone_valid", "top_season", "season", "bought",
                    "segment", "churn_risk"}
 
 

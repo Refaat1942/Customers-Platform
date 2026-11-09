@@ -1,12 +1,12 @@
 import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { Award, Calendar, MapPin, Package, ShoppingBag, Store, Tag } from "lucide-react";
 import { api } from "../lib/api";
 import { useFilters } from "../lib/filters";
 import { fmtDate, fmtInt, fmtMoney, fmtPct } from "../lib/format";
 import FilterBar from "../components/FilterBar";
-import { Card, Empty, ErrorBox, ExportButton, Kpi, PageHeader, PrintButton, Spinner } from "../components/ui";
+import { Card, Empty, ErrorBox, ExportButton, Kpi, Notice, PageHeader, PrintButton, Spinner } from "../components/ui";
 import { RankBars, ShareBar, TrendChart } from "../components/charts";
 import DataTable from "../components/DataTable";
 
@@ -25,6 +25,16 @@ export default function Dashboard() {
       <PageHeader title={t("nav.dashboard")}
         subtitle={meta?.last_import ? `${fmtInt(meta.rows)} ${t("app.rows")} · ${meta.last_import.filename} · ${fmtDate(meta.last_import.finished_at, true)}` : undefined}
         actions={<><ExportButton path="/summary" params={params} /><PrintButton /></>} />
+      {meta && meta.rows === 0 && meta.directory_customers > 0 && (
+        <div className="mb-5"><Notice kind="info">
+          <div className="font-semibold mb-1">{t("base.noSalesTitle")}</div>
+          <div>{t("base.noSales", { n: fmtInt(meta.directory_customers) })}</div>
+          <div className="flex gap-2 mt-3">
+            <Link to="/customer-base" className="btn-primary">{t("base.openBase")}</Link>
+            <Link to="/import" className="btn-ghost">{t("base.uploadSales")}</Link>
+          </div>
+        </Notice></div>
+      )}
       <FilterBar />
       {q.isLoading ? <Spinner /> : q.error ? <ErrorBox error={q.error} onRetry={() => q.refetch()} /> : !d || d.kpis.lines === 0 ? <Empty /> : (
         <div className="space-y-5">
