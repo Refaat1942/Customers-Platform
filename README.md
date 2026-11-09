@@ -119,12 +119,11 @@ cd /opt/customers-platform && git pull && docker compose up -d --build
 Backups go to `/opt/customers-platform/backups/` (last 14 days are kept). Restore with
 `deploy/restore.sh backups/<file>.sql.gz`.
 
-### Connect to PostgreSQL directly (pgAdmin / DBeaver)
-The database listens only on the VPS itself (127.0.0.1:5433), not on the internet. Use an SSH tunnel:
+### Connect to PostgreSQL directly
+The database is not exposed on any server port (only the app can reach it). Open a SQL shell with:
 ```bash
-ssh -L 5433:127.0.0.1:5433 root@187.124.177.138
+cd /opt/customers-platform && docker compose exec db psql -U customers customers
 ```
-Then connect to `localhost:5433`, database `customers`, user `customers`, with the password from `.env`.
 
 ### Recommended: HTTPS with a domain
 Port 1100 uses plain HTTP, so passwords travel unencrypted. If you point a domain (e.g. `crm.yourdomain.com`)

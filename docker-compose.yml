@@ -21,9 +21,8 @@ services:
       -c max_wal_size=4GB
       -c max_parallel_workers_per_gather=2
       -c random_page_cost=1.1
-    # only reachable from the VPS itself (use an SSH tunnel for pgAdmin / DBeaver)
-    ports:
-      - "127.0.0.1:${DB_PORT:-5433}:5432"
+    # no port is published: only the app container can reach the database.
+    # Open a database shell with:  docker compose exec db psql -U customers customers
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U customers -d customers"]
       interval: 5s
