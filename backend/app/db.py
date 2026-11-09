@@ -101,6 +101,26 @@ CREATE TABLE IF NOT EXISTS audit_log (
 );
 CREATE INDEX IF NOT EXISTS audit_ts_idx ON audit_log (ts DESC);
 
+-- customer lists from the CRM (one row per phone), linked to sales by phone
+CREATE TABLE IF NOT EXISTS customer_directory (
+    phone TEXT PRIMARY KEY,
+    phone_valid BOOLEAN,
+    name TEXT,
+    first_name TEXT,
+    last_name TEXT,
+    address TEXT,
+    region TEXT,
+    city TEXT,
+    district TEXT,
+    area TEXT,
+    email TEXT,
+    gender TEXT,
+    birth_date DATE,
+    import_id INTEGER,
+    updated_at TIMESTAMP DEFAULT now()
+);
+ALTER TABLE imports ADD COLUMN IF NOT EXISTS kind TEXT DEFAULT 'sales';
+
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE IF NOT EXISTS saved_mappings (signature TEXT PRIMARY KEY, mapping TEXT);
 """

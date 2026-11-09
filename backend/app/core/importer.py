@@ -15,13 +15,15 @@ import psycopg
 
 from .. import config, db
 from .address import extract_district
-from .columns import FIELDS, REQUIRED_FIELDS, clean_col_name, find_columns
+from .columns import (CUSTOMER_FIELDS, CUSTOMER_REQUIRED, FIELDS, REQUIRED_FIELDS,
+                      clean_col_name, find_columns, find_customer_columns)
 from .phone import is_valid_egy_mobile, normalize_egy_phone
 
 SEASONS = {12: "Winter", 1: "Winter", 2: "Winter", 3: "Spring", 4: "Spring", 5: "Spring",
            6: "Summer", 7: "Summer", 8: "Summer", 9: "Autumn", 10: "Autumn", 11: "Autumn"}
 
-IMPORT_MODES = ("replace_period", "append_new", "replace_all")
+IMPORT_MODES = ("merge", "replace_period", "append_new", "replace_all")
+CUSTOMER_MODES = ("upsert", "replace_all")
 
 TEXT_FIELDS = ["name", "branch", "address", "district", "invoice_no", "invoice_type",
                "item_code", "item_name", "material_group", "item_category", "item_unit"]
@@ -145,20 +147,117 @@ def file_sha256(path: Path) -> str:
     return h.hexdigest()
 
 
-def header_signature(columns) -> str:
-    key = "|".join(sorted(clean_col_name(c) for c in columns))
+def header_signature(columns, kind: str = "sales") -> str:
+    key = kind + ":" + "|".join(sorted(clean_col_name(c) for c in columns))
     return hashlib.sha1(key.encode()).hexdigest()
 
 
-def suggest_mapping(columns) -> dict:
-    """Saved mapping for this header layout if any, else the automatic guess."""
+# ---------------------------------------------------------------- smart detection
+def profile_columns(df: pd.DataFrame) -> dict:
+    """Look at the VALUES of each column: how many look like phones, dates, money, ..."""
+    out = {}
+    for c in df.columns:
+        s = df[c].dropna()
+        s = s[s.astype(str).str.strip() != ""]
+        n = len(s)
+        if n == 0:
+            out[c] = {"n": 0, "phone": 0, "date": 0, "num": 0, "decimal": 0, "unique": 0}
+            continue
+        txt = s.astype(str)
+        phone = txt.map(lambda v: is_valid_egy_mobile(normalize_egy_phone(v))).mean()
+        dates = _parse_dates(s.astype(object))
+        date_ratio = dates.notna().mean()
+        if date_ratio:  # plain numbers like 1500 are not dates unless the column really is
+            years = dates.dropna().dt.year
+            date_ratio *= float(years.between(2000, 2100).mean())
+            if pd.api.types.is_numeric_dtype(s) or txt.str.fullmatch(r"\d+(\.\d+)?").mean() > 0.8:
+                date_ratio *= float(pd.to_numeric(s, errors="coerce").between(30000, 60000).mean())
+        num = _parse_numbers(s)
+        out[c] = {"n": n, "phone": float(phone), "date": float(date_ratio),
+                  "num": float(num.notna().mean()),
+                  "decimal": float(((num.dropna() % 1) != 0).mean()) if num.notna().any() else 0.0,
+                  "unique": float(s.nunique() / n)}
+    return out
+
+
+PRICE_HINTS = ("price", "amount", "total", "net", "value", "sales", "revenue", "قيمة", "سعر",
+               "اجمالي", "إجمالي", "egp", "rsp")
+
+
+def smart_sales_mapping(df: pd.DataFrame, mapping: dict, prof: dict) -> dict:
+    """Fix / complete the header-based guess using the column values."""
+    m = dict(mapping)
+    used = {v for v in m.values() if v}
+
+    def best(metric, min_ratio, exclude=()):
+        cands = [(p[metric], c) for c, p in prof.items()
+                 if c not in used and c not in exclude and p["n"] and p[metric] >= min_ratio]
+        return max(cands)[1] if cands else None
+
+    # phone: header guess must actually contain phone numbers
+    if m.get("phone") and prof.get(m["phone"], {}).get("phone", 0) < 0.3:
+        better = best("phone", 0.6)
+        if better:
+            used.discard(m["phone"])
+            m["phone"] = better
+    if not m.get("phone"):
+        m["phone"] = best("phone", 0.6)
+        used.add(m["phone"])
+
+    if m.get("invoice_date") and prof.get(m["invoice_date"], {}).get("date", 0) < 0.5:
+        used.discard(m["invoice_date"])
+        m["invoice_date"] = None
+    if not m.get("invoice_date"):
+        m["invoice_date"] = best("date", 0.7)
+        used.add(m["invoice_date"])
+
+    if m.get("item_price") and prof.get(m["item_price"], {}).get("num", 0) < 0.7:
+        used.discard(m["item_price"])
+        m["item_price"] = None
+    if not m.get("item_price"):
+        cands = []
+        for c, p in prof.items():
+            if c in used or not p["n"] or p["num"] < 0.9 or p["phone"] > 0.3 or p["date"] > 0.3:
+                continue
+            name = clean_col_name(c)
+            score = p["decimal"] + (1 if any(h in name for h in PRICE_HINTS) else 0) \
+                - (1 if any(h in name for h in ("code", "id", "no", "number", "qty", "كود")) else 0)
+            cands.append((score, c))
+        if cands and max(cands)[0] > 0:
+            m["item_price"] = max(cands)[1]
+    used.discard(None)
+    return m
+
+
+def detect_kind(sales_map: dict, cust_map: dict) -> tuple[str, str]:
+    """('sales' | 'customers', reason)."""
+    if sales_map.get("invoice_date") and sales_map.get("item_price") and sales_map.get("phone"):
+        return "sales", "dates_amounts"
+    has_details = any(cust_map.get(k) for k in ("name", "first_name", "address", "city",
+                                                 "district", "area", "region"))
+    if cust_map.get("phone") and has_details:
+        return "customers", "no_dates_amounts"
+    return "sales", "unknown"
+
+
+def suggest_mappings(columns, df: pd.DataFrame) -> dict:
+    """Saved mapping for this header layout if any, else the smart guess, for both kinds."""
     cur = db.cursor()
-    saved = db.one(cur, "SELECT mapping FROM saved_mappings WHERE signature = ?",
-                   [header_signature(columns)])
-    if saved:
-        m = json.loads(saved["mapping"])
-        return {f: (m.get(f) if m.get(f) in columns else None) for f in FIELDS}
-    return find_columns(columns)
+    prof = profile_columns(df)
+    out = {}
+    for kind, guess in (("sales", lambda: smart_sales_mapping(df, find_columns(columns), prof)),
+                        ("customers", lambda: find_customer_columns(columns))):
+        fields = FIELDS if kind == "sales" else CUSTOMER_FIELDS
+        saved = db.one(cur, "SELECT mapping FROM saved_mappings WHERE signature = ?",
+                       [header_signature(columns, kind)])
+        if saved:
+            mm = json.loads(saved["mapping"])
+            out[kind] = {f: (mm.get(f) if mm.get(f) in columns else None) for f in fields}
+        else:
+            out[kind] = guess()
+    if out["customers"].get("phone") is None and out["sales"].get("phone"):
+        out["customers"]["phone"] = out["sales"]["phone"]
+    return out
 
 
 def _jsonable(v):
@@ -173,47 +272,100 @@ def _jsonable(v):
     return v if isinstance(v, (int, float, bool)) else str(v)
 
 
-def preview(path: Path, sheet: str | None = None) -> dict:
-    sheets = sheet_names(path)
-    sheet = sheet or (sheets[0] if sheets else None)
-    df = read_file(path, nrows=20, sheet=sheet)
+def analyse_sheet(path: Path, sheet: str | None) -> dict:
+    """Read the first rows of one sheet and decide what it is and how its columns map."""
+    df = read_file(path, nrows=300, sheet=sheet)
+    df = df.dropna(axis=1, how="all")
     cols = list(df.columns)
+    if df.empty or not cols:
+        return {"sheet": sheet, "kind": "empty", "kind_reason": "empty", "columns": cols,
+                "mappings": {"sales": {}, "customers": {}}, "mapping": {}, "sample": [], "rows": 0}
+    maps = suggest_mappings(cols, df)
+    kind, reason = detect_kind(maps["sales"], maps["customers"])
+    if reason == "unknown":
+        kind = "skip"
+    return {"sheet": sheet, "kind": kind, "kind_reason": reason, "columns": cols,
+            "mappings": maps, "mapping": maps.get(kind, maps["sales"]),
+            "sample": [{c: _jsonable(v) for c, v in r.items()} for r in df.head(10).to_dict("records")]}
+
+
+def preview(path: Path, sheet: str | None = None) -> dict:
+    """Analyse every sheet of the workbook (or the CSV) - each can be a different kind of data."""
+    names = sheet_names(path)
+    totals = {}
+    if names:
+        wb = CalamineWorkbook.from_path(str(path))
+        for n in names:
+            try:
+                totals[n] = max(wb.get_sheet_by_name(n).total_height - 1, 0)
+            except Exception:  # noqa: BLE001
+                totals[n] = None
+    targets = ([sheet] if sheet else names[:30]) if names else [None]
+    sheets = []
+    for n in targets:
+        info = analyse_sheet(path, n)
+        info["rows"] = totals.get(n) if n else None
+        sheets.append(info)
+    first = next((x for x in sheets if x["kind"] in ("sales", "customers")), sheets[0])
     return {
-        "sheets": sheets,
-        "sheet": sheet,
-        "columns": cols,
-        "mapping": suggest_mapping(cols),
-        "sample": [{c: _jsonable(v) for c, v in r.items()} for r in df.to_dict("records")],
+        "sheets": names,
+        "sheets_info": sheets,
+        # the first useful sheet, for single-sheet callers
+        "sheet": first["sheet"], "columns": first["columns"], "kind": first["kind"],
+        "kind_reason": first["kind_reason"], "mappings": first["mappings"],
+        "mapping": first["mapping"], "sample": first["sample"],
+        "fields": {"sales": FIELDS, "customers": CUSTOMER_FIELDS},
+        "required": {"sales": REQUIRED_FIELDS, "customers": CUSTOMER_REQUIRED},
+        "modes": {"sales": list(IMPORT_MODES), "customers": list(CUSTOMER_MODES)},
     }
 
 
+def run_jobs(jobs: list[dict], path: Path):
+    """Run several sheet imports from the same file one after another, then delete the file."""
+    try:
+        # customer lists first, so the sales imported next get names/districts from them
+        for j in sorted(jobs, key=lambda j: 0 if j["kind"] == "customers" else 1):
+            fn = run_customer_import if j["kind"] == "customers" else run_import
+            fn(j["import_id"], path, j["mapping"], j["mode"], j["sheet"], cleanup=False)
+    finally:
+        path.unlink(missing_ok=True)
+
+
 # ---------------------------------------------------------------- cleaning
+def _ns(v: pd.Series) -> pd.Series:
+    """Keep plausible dates only and store them in one resolution (avoids pandas unit clashes)."""
+    v = pd.to_datetime(v, errors="coerce")
+    v = v.where((v.dt.year >= 1900) & (v.dt.year <= 2200))
+    return v.astype("datetime64[ns]")
+
+
 def _parse_dates(s: pd.Series) -> pd.Series:
     """Excel datetimes, Excel serial numbers, ISO text (yyyy-mm-dd) and Egyptian dd/mm/yyyy text."""
     if pd.api.types.is_datetime64_any_dtype(s):
-        return pd.to_datetime(s, errors="coerce")
+        return _ns(s)
     out = pd.Series(pd.NaT, index=s.index, dtype="datetime64[ns]")
 
     is_dt = s.map(lambda v: isinstance(v, (datetime, date)))
     if is_dt.any():
-        out[is_dt] = pd.to_datetime(s[is_dt], errors="coerce")
+        out[is_dt] = _ns(s[is_dt].map(pd.Timestamp))
 
     rest = ~is_dt & s.notna()
     num = pd.to_numeric(s[rest], errors="coerce")
     serial = num.between(20000, 80000)  # Excel serial day numbers
     if serial.any():
         idx = num[serial].index
-        out[idx] = pd.to_datetime(num[serial], unit="D", origin="1899-12-30")
+        out[idx] = _ns(pd.to_datetime(num[serial], unit="D", origin="1899-12-30"))
         rest[idx] = False
+    rest &= ~pd.Series(num.notna(), index=num.index).reindex(s.index, fill_value=False)
 
     if rest.any():
         txt = s[rest].astype(str).str.strip()
         iso = txt.str.match(r"^\d{4}-\d{1,2}-\d{1,2}")
         if iso.any():
-            out[txt[iso].index] = pd.to_datetime(txt[iso], errors="coerce", format="ISO8601")
+            out[txt[iso].index] = _ns(pd.to_datetime(txt[iso], errors="coerce", format="ISO8601"))
         if (~iso).any():
-            out[txt[~iso].index] = pd.to_datetime(txt[~iso], errors="coerce", dayfirst=True,
-                                                  format="mixed")
+            out[txt[~iso].index] = _ns(pd.to_datetime(txt[~iso], errors="coerce", dayfirst=True,
+                                                      format="mixed"))
     return out
 
 
@@ -317,7 +469,8 @@ def _warm_cache():
         pass
 
 
-def run_import(import_id: int, path: Path, mapping: dict, mode: str, sheet: str | None = None):
+def run_import(import_id: int, path: Path, mapping: dict, mode: str, sheet: str | None = None,
+               cleanup: bool = True):
     """Stream the file in 100k-row chunks into a staging table, then swap it in atomically."""
     conn = psycopg.connect(config.DATABASE_URL, autocommit=True)
     cur = db.Cursor(conn)
@@ -347,6 +500,7 @@ def run_import(import_id: int, path: Path, mapping: dict, mode: str, sheet: str 
             raise ValueError("The file is empty")
 
         _progress(cur, import_id, "saving", 92)
+        enrich_sales(cur, stage_tbl)
         cur.execute(f"ANALYZE {stage_tbl}")
         skipped = stats["invalid_dates"]
         replaced = 0
@@ -354,6 +508,16 @@ def run_import(import_id: int, path: Path, mapping: dict, mode: str, sheet: str 
             if mode == "replace_all":
                 replaced = cur.execute("SELECT count(*) FROM sales").fetchone()[0]
                 cur.execute("TRUNCATE sales")
+            elif mode == "merge":
+                # safest: add everything, skip lines that are already in the system
+                dup = f"""EXISTS (SELECT 1 FROM sales x WHERE x.phone IS NOT DISTINCT FROM s.phone
+                    AND x.day = s.day AND x.invoice_date = s.invoice_date
+                    AND x.visit_key = s.visit_key AND x.item_price = s.item_price
+                    AND x.item_code IS NOT DISTINCT FROM s.item_code
+                    AND x.item_name IS NOT DISTINCT FROM s.item_name
+                    AND x.quantity IS NOT DISTINCT FROM s.quantity)"""
+                skipped += cur.execute(f"SELECT count(*) FROM {stage_tbl} s WHERE {dup}").fetchone()[0]
+                cur.execute(f"DELETE FROM {stage_tbl} s WHERE {dup}")
             elif mode == "append_new":
                 last = cur.execute("SELECT max(invoice_date) FROM sales").fetchone()[0]
                 if last is not None:
@@ -391,7 +555,126 @@ def run_import(import_id: int, path: Path, mapping: dict, mode: str, sheet: str 
                     "WHERE id=?", [str(e)[:1000], import_id])
     finally:
         conn.close()
-        try:
+        if cleanup:
             path.unlink(missing_ok=True)
-        except OSError:
-            pass
+
+
+# ---------------------------------------------------------------- customer lists
+DIRECTORY_COLS = ["phone", "phone_valid", "name", "first_name", "last_name", "address", "region",
+                  "city", "district", "area", "email", "gender", "birth_date", "import_id"]
+
+
+def enrich_sales(cur, table: str = "sales"):
+    """Use the customer list to fill/correct names and districts of sales rows (by phone)."""
+    cur.execute(f"""UPDATE {table} s SET district = d.district FROM customer_directory d
+                    WHERE s.phone = d.phone AND d.district IS NOT NULL
+                      AND s.district IS DISTINCT FROM d.district""")
+    cur.execute(f"""UPDATE {table} s SET name = d.name FROM customer_directory d
+                    WHERE s.phone = d.phone AND s.name IS NULL AND d.name IS NOT NULL""")
+
+
+def build_customer_frame(raw: pd.DataFrame, mapping: dict) -> tuple[pd.DataFrame, dict]:
+    def col(f):
+        c = mapping.get(f)
+        return _clean_text(raw[c]) if c and c in raw.columns else pd.Series(None, index=raw.index,
+                                                                           dtype=object)
+
+    stats = {"rows_read": len(raw), "invalid_phones": 0, "invalid_dates": 0}
+    ph = raw[mapping["phone"]].astype(str)
+    uniq = {v: normalize_egy_phone(v) for v in pd.unique(ph)}
+    out = pd.DataFrame(index=raw.index)
+    out["phone"] = ph.map(uniq).replace("", None)
+    out["phone_valid"] = out["phone"].map(lambda p: bool(p) and is_valid_egy_mobile(p))
+    stats["invalid_phones"] = int((out["phone"].notna() & ~out["phone_valid"]).sum())
+
+    first, last = col("first_name"), col("last_name")
+    joined = (first.fillna("") + " " + last.fillna("")).str.strip().replace("", None)
+    out["first_name"], out["last_name"] = first, last
+    out["name"] = col("name").fillna(joined)
+
+    for f in ("region", "city", "district", "area", "email", "gender"):
+        out[f] = col(f)
+    parts = [col(f) for f in ("building", "street", "landmark", "area", "district", "city",
+                              "region")]
+    built = pd.concat(parts, axis=1).apply(
+        lambda r: ", ".join(v for v in r if isinstance(v, str) and v), axis=1).replace("", None) if len(raw) else None
+    out["address"] = col("address").fillna(built) if len(raw) else None
+    # district: from the file, else the area, else guessed from the address
+    guessed = out["address"].map(lambda a: None if a is None else
+                                 (lambda d: None if d == "Unknown" else d)(extract_district(a)))
+    out["district"] = out["district"].fillna(out["area"]).fillna(guessed)
+
+    bd = mapping.get("birth_date")
+    out["birth_date"] = _parse_dates(raw[bd]).dt.date if bd and bd in raw.columns else None
+    out = out[out["phone"].notna()]
+    return out, stats
+
+
+def run_customer_import(import_id: int, path: Path, mapping: dict, mode: str,
+                        sheet: str | None = None, cleanup: bool = True):
+    """Customer list: upsert one row per phone into customer_directory, then enrich sales."""
+    conn = psycopg.connect(config.DATABASE_URL, autocommit=True)
+    cur = db.Cursor(conn)
+    stage_tbl = f"staging_c{import_id}"
+    try:
+        stats = {"rows_read": 0, "invalid_dates": 0, "invalid_phones": 0}
+        cur.execute(f"DROP TABLE IF EXISTS {stage_tbl}")
+        cur.execute(f"CREATE UNLOGGED TABLE {stage_tbl} (LIKE customer_directory INCLUDING DEFAULTS)")
+        cur.execute(f"ALTER TABLE {stage_tbl} ADD COLUMN rn BIGSERIAL")
+        _progress(cur, import_id, "reading", 1)
+        checked = False
+        for chunk, total in iter_chunks(path, sheet):
+            if not checked:
+                if not mapping.get("phone") or mapping["phone"] not in chunk.columns:
+                    raise ValueError("Missing required column: phone")
+                checked = True
+            frame, st = build_customer_frame(chunk, mapping)
+            for k in stats:
+                stats[k] += st[k]
+            frame = frame.assign(import_id=import_id)[DIRECTORY_COLS]
+            obj = frame.astype(object).where(frame.notna(), None)
+            with cur.copy(f"COPY {stage_tbl} ({', '.join(DIRECTORY_COLS)}) FROM STDIN") as cp:
+                for row in obj.itertuples(index=False, name=None):
+                    cp.write_row(row)
+            _progress(cur, import_id, "cleaning", 5 + 80 * min(stats["rows_read"] / max(total, 1), 1),
+                      rows_read=stats["rows_read"])
+        if not checked:
+            raise ValueError("The file is empty")
+
+        _progress(cur, import_id, "saving", 88)
+        upd = ", ".join(f"{c} = coalesce(EXCLUDED.{c}, customer_directory.{c})"
+                        for c in DIRECTORY_COLS if c not in ("phone", "import_id"))
+        with conn.transaction():
+            replaced = 0
+            if mode == "replace_all":
+                replaced = cur.execute("SELECT count(*) FROM customer_directory").fetchone()[0]
+                cur.execute("TRUNCATE customer_directory")
+            else:
+                replaced = cur.execute(f"SELECT count(DISTINCT s.phone) FROM {stage_tbl} s "
+                                       f"JOIN customer_directory d USING (phone)").fetchone()[0]
+            cur.execute(f"""INSERT INTO customer_directory ({', '.join(DIRECTORY_COLS)})
+                SELECT DISTINCT ON (phone) {', '.join(DIRECTORY_COLS)} FROM {stage_tbl}
+                ORDER BY phone, rn DESC
+                ON CONFLICT (phone) DO UPDATE SET {upd}, import_id = EXCLUDED.import_id,
+                    updated_at = now()""")
+            customers = cur.execute(f"SELECT count(DISTINCT phone) FROM {stage_tbl}").fetchone()[0]
+            cur.execute(f"DROP TABLE {stage_tbl}")
+            _progress(cur, import_id, "saving", 94)
+            enrich_sales(cur)
+            cur.execute(
+                """UPDATE imports SET status='done', stage='finished', progress=100,
+                   finished_at=now(), rows_read=?, rows_imported=?, rows_skipped=?,
+                   rows_replaced=?, invalid_phones=?, invalid_dates=0 WHERE id=?""",
+                [stats["rows_read"], customers, stats["rows_read"] - customers, int(replaced),
+                 stats["invalid_phones"], import_id])
+        cur.execute("ANALYZE customer_directory")
+        db.bump_version()
+        _warm_cache()
+    except Exception as e:  # noqa: BLE001 - reported to the user
+        cur.execute(f"DROP TABLE IF EXISTS {stage_tbl}")
+        cur.execute("UPDATE imports SET status='failed', message=?, finished_at=now() "
+                    "WHERE id=?", [str(e)[:1000], import_id])
+    finally:
+        conn.close()
+        if cleanup:
+            path.unlink(missing_ok=True)

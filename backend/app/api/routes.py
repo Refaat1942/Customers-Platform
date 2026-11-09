@@ -18,7 +18,7 @@ from ..core import ai
 from ..core import analytics as an
 from ..core import export as ex
 from ..core import importer
-from ..core.columns import FIELDS, REQUIRED_FIELDS
+from ..core.columns import CUSTOMER_FIELDS, CUSTOMER_REQUIRED, FIELDS, REQUIRED_FIELDS
 from ..permissions import ALL as ALL_PERMISSIONS
 from ..permissions import PERMISSIONS
 
@@ -339,9 +339,10 @@ def get_insights(f: an.Filters = Depends(filters), export: bool = False, lang: s
 
 # ====================================================================== customers
 CUSTOMER_VIEWS = {
-    "customers": ["phone", "name", "branch", "district", "total_spent", "visits", "first_visit",
-                  "last_visit", "days_since", "avg_per_visit", "avg_days_between",
-                  "top_sales_type", "segment", "status"],
+    "customers": ["phone", "name", "branch", "district", "total_spent", "visits", "avg_per_visit",
+                  "max_invoice", "min_invoice", "items_count", "fav_item", "first_visit",
+                  "last_visit", "days_since", "avg_days_between", "top_sales_type", "segment",
+                  "status"],
     "business": ["phone", "name", "branch", "total_spent", "visits", "top_material",
                  "top_category", "top_sales_type", "top_season", "loyal"],
     "recommendations": ["phone", "name", "branch", "total_spent", "visits", "last_visit",
@@ -429,6 +430,27 @@ def get_customer(cid: str, f: an.Filters = Depends(filters), export: bool = Fals
         ("شهري" if ar else "Monthly", ex.frame(res["monthly"], ["month", "sales", "visits"], lang)),
     ]
     return xlsx_response(ex.workbook(sheets, lang), f"customer_{cid}.xlsx")
+
+
+# ====================================================================== products
+@router.get("/products")
+def get_products(f: an.Filters = Depends(filters), q: str | None = None, sort: str = "sales",
+                 desc: bool = True, page: int = Query(1, ge=1),
+                 page_size: int = Query(50, ge=1, le=500), export: bool = False,
+                 lang: str = "en", user: dict = Depends(require("business"))):
+    if export:
+        need_export(user)
+        res = an.products(f, q=q, sort=sort, desc=desc, limit_all=True)
+        audit(user, "export", f"products ({res['total']}) {filter_text(f)}")
+        cols = ["item", "code", "category", "material_group", "sales", "share", "quantity",
+                "invoices", "customers", "repeat_buyers", "repeat_rate", "times_per_buyer",
+                "avg_price", "top_branch", "first_sold", "last_sold"]
+        sheet = "الأصناف" if lang == "ar" else "Products"
+        return xlsx_response(ex.workbook([(sheet, ex.frame(res["rows"], cols, lang))], lang, sheet,
+                                         filter_meta(f, lang)), "products_report.xlsx")
+    return db.cached(("products", f.key(), q, sort, desc, page, page_size),
+                     lambda: an.products(f, q=q, sort=sort, desc=desc, page=page,
+                                         page_size=page_size))
 
 
 # ====================================================================== area
@@ -556,6 +578,7 @@ def _do_preview(up: dict, sheet: str | None):
         raise HTTPException(400, f"Could not read the file: {e}") from e
     up["columns"] = pv["columns"]
     up["sheet"] = pv["sheet"]
+    up.setdefault("sheet_columns", {}).update({x["sheet"]: x["columns"] for x in pv["sheets_info"]})
     return pv
 
 
@@ -574,8 +597,7 @@ def upload_finish(uid: str, user: dict = Depends(require("import"))):
                  [up["hash"]])
     pv = _do_preview(up, None)
     audit(user, "import_upload", f"{up['filename']} ({up['size'] / 1e6:.1f} MB)")
-    return {"upload_id": uid, "filename": up["filename"], **pv, "duplicate_of": dup,
-            "fields": FIELDS, "required": REQUIRED_FIELDS, "modes": list(importer.IMPORT_MODES)}
+    return {"upload_id": uid, "filename": up["filename"], **pv, "duplicate_of": dup}
 
 
 @router.get("/imports/uploads/{uid}/preview")
@@ -584,12 +606,37 @@ def upload_preview(uid: str, sheet: str, user: dict = Depends(require("import"))
     return _do_preview(up, sheet)
 
 
+class ImportJob(BaseModel):
+    sheet: str | None = None
+    kind: Literal["sales", "customers"] = "sales"
+    mapping: dict[str, str | None]
+    mode: Literal["merge", "replace_period", "append_new", "replace_all", "upsert"] = "merge"
+
+
 class CommitIn(BaseModel):
     upload_id: str
-    mapping: dict[str, str | None]
-    mode: Literal["replace_period", "append_new", "replace_all"] = "replace_period"
+    # several sheets of one workbook, each with its own kind and columns ...
+    jobs: list[ImportJob] | None = None
+    # ... or a single sheet (older clients)
+    kind: Literal["sales", "customers"] = "sales"
+    mapping: dict[str, str | None] | None = None
+    mode: Literal["merge", "replace_period", "append_new", "replace_all", "upsert"] = "merge"
     sheet: str | None = None
     remember_mapping: bool = True
+
+
+def _check_job(j: ImportJob) -> dict:
+    fields, required, modes = (
+        (FIELDS, REQUIRED_FIELDS, importer.IMPORT_MODES) if j.kind == "sales"
+        else (CUSTOMER_FIELDS, CUSTOMER_REQUIRED, importer.CUSTOMER_MODES))
+    where = f" (sheet '{j.sheet}')" if j.sheet else ""
+    if j.mode not in modes:
+        raise HTTPException(400, f"Mode must be one of: {', '.join(modes)}{where}")
+    mapping = {f: (j.mapping.get(f) or None) for f in fields}
+    missing = [f for f in required if not mapping[f]]
+    if missing:
+        raise HTTPException(400, f"Please choose a column for: {', '.join(missing)}{where}")
+    return mapping
 
 
 @router.post("/imports/commit")
@@ -597,31 +644,36 @@ def commit(body: CommitIn, user: dict = Depends(require("import"))):
     up = _get_upload(body.upload_id)
     if "columns" not in up:
         raise HTTPException(400, "Finish the upload first")
-    mapping = {f: (body.mapping.get(f) or None) for f in FIELDS}
-    missing = [f for f in REQUIRED_FIELDS if not mapping[f]]
-    if missing:
-        raise HTTPException(400, f"Please choose a column for: {', '.join(missing)}")
+    jobs = body.jobs or [ImportJob(sheet=body.sheet or up.get("sheet"), kind=body.kind,
+                                   mapping=body.mapping or {}, mode=body.mode)]
+    if not jobs:
+        raise HTTPException(400, "Choose at least one sheet to import")
+    checked = [(j, _check_job(j)) for j in jobs]
     _uploads.pop(body.upload_id, None)
     cur = db.cursor()
-    if body.remember_mapping:
-        cur.execute("INSERT INTO saved_mappings VALUES (?, ?) ON CONFLICT (signature) "
-                    "DO UPDATE SET mapping = EXCLUDED.mapping",
-                    [importer.header_signature(up["columns"]), json.dumps(mapping)])
-    imp_id = cur.execute(
-        "INSERT INTO imports (filename, mode, status, stage, mapping, created_by, sheet, "
-        "file_hash, file_size) VALUES (?, ?, 'running', 'queued', ?, ?, ?, ?, ?) RETURNING id",
-        [up["filename"], body.mode, json.dumps(mapping), user["username"],
-         body.sheet or up.get("sheet"), up.get("hash"), up["size"]]).fetchone()[0]
-    audit(user, "import_start", f"#{imp_id} {up['filename']} mode={body.mode}")
-    threading.Thread(target=importer.run_import,
-                     args=(imp_id, up["path"], mapping, body.mode, body.sheet or up.get("sheet")),
-                     daemon=True).start()
-    return {"import_id": imp_id}
+    run = []
+    for j, mapping in checked:
+        cols = up.get("sheet_columns", {}).get(j.sheet, up["columns"])
+        if body.remember_mapping:
+            cur.execute("INSERT INTO saved_mappings VALUES (?, ?) ON CONFLICT (signature) "
+                        "DO UPDATE SET mapping = EXCLUDED.mapping",
+                        [importer.header_signature(cols, j.kind), json.dumps(mapping)])
+        name = up["filename"] + (f" [{j.sheet}]" if j.sheet and len(jobs) > 1 else "")
+        imp_id = cur.execute(
+            "INSERT INTO imports (filename, kind, mode, status, stage, mapping, created_by, sheet, "
+            "file_hash, file_size) VALUES (?, ?, ?, 'running', 'queued', ?, ?, ?, ?, ?) RETURNING id",
+            [name, j.kind, j.mode, json.dumps(mapping), user["username"], j.sheet,
+             up.get("hash"), up["size"]]).fetchone()[0]
+        audit(user, "import_start", f"#{imp_id} {name} kind={j.kind} mode={j.mode}")
+        run.append({"import_id": imp_id, "kind": j.kind, "mapping": mapping, "mode": j.mode,
+                    "sheet": j.sheet})
+    threading.Thread(target=importer.run_jobs, args=(run, up["path"]), daemon=True).start()
+    return {"import_ids": [r["import_id"] for r in run], "import_id": run[0]["import_id"]}
 
 
 @router.get("/imports")
 def list_imports(user: dict = Depends(require("import"))):
-    return db.rows(db.cursor(), "SELECT id, filename, mode, status, stage, progress, message, "
+    return db.rows(db.cursor(), "SELECT id, filename, kind, mode, status, stage, progress, message, "
                                 "sheet, file_size, rows_read, rows_imported, rows_skipped, "
                                 "rows_replaced, invalid_phones, invalid_dates, date_from, date_to, "
                                 "created_by, created_at, finished_at "
@@ -639,8 +691,10 @@ def get_import(imp_id: int, user: dict = Depends(require("import"))):
 @router.delete("/imports/{imp_id}")
 def delete_import(imp_id: int, user: dict = Depends(require("import"))):
     cur = db.cursor()
-    n = cur.execute("SELECT count(*) FROM sales WHERE import_id = ?", [imp_id]).fetchone()[0]
-    cur.execute("DELETE FROM sales WHERE import_id = ?", [imp_id])
+    imp = db.one(cur, "SELECT kind FROM imports WHERE id = ?", [imp_id])
+    table = "customer_directory" if imp and imp["kind"] == "customers" else "sales"
+    n = cur.execute(f"SELECT count(*) FROM {table} WHERE import_id = ?", [imp_id]).fetchone()[0]
+    cur.execute(f"DELETE FROM {table} WHERE import_id = ?", [imp_id])
     cur.execute("UPDATE imports SET status='deleted', message=? WHERE id = ?",
                 [f"{n} rows removed", imp_id])
     db.bump_version()

@@ -8,11 +8,17 @@ import { fmtBytes, fmtDate, fmtInt } from "../lib/format";
 import DataTable from "../components/DataTable";
 import { Badge, Card, Notice, PageHeader } from "../components/ui";
 
-type Preview = {
-  upload_id: string; filename: string; sheets: string[]; sheet: string | null; columns: string[];
-  mapping: Record<string, string | null>; sample: Record<string, any>[]; fields: string[]; required: string[];
-  modes: string[]; duplicate_of: { id: number; finished_at: string } | null;
+type Kind = "sales" | "customers" | "skip" | "empty";
+type SheetInfo = {
+  sheet: string | null; rows: number | null; columns: string[]; kind: Kind; kind_reason: string;
+  mappings: Record<"sales" | "customers", Record<string, string | null>>; sample: Record<string, any>[];
 };
+type Preview = {
+  upload_id: string; filename: string; sheets_info: SheetInfo[];
+  fields: Record<"sales" | "customers", string[]>; required: Record<"sales" | "customers", string[]>;
+  modes: Record<"sales" | "customers", string[]>; duplicate_of: { id: number; finished_at: string } | null;
+};
+type SheetState = SheetInfo & { mode: Record<"sales" | "customers", string>; open: boolean };
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -51,8 +57,7 @@ export default function Import() {
   const [phase, setPhase] = useState<"idle" | "uploading" | "reading" | "mapping" | "importing">("idle");
   const [err, setErr] = useState<string | null>(null);
   const [pv, setPv] = useState<Preview | null>(null);
-  const [mapping, setMapping] = useState<Record<string, string | null>>({});
-  const [mode, setMode] = useState("replace_period");
+  const [sheets, setSheets] = useState<SheetState[]>([]);
   const [drag, setDrag] = useState(false);
 
   const history = useQuery({
@@ -67,25 +72,30 @@ export default function Import() {
       const id = await chunkedUpload(f, setSent);
       setPhase("reading");
       const p = await api.post<Preview>(`/imports/uploads/${id}/finish`);
-      setPv(p); setMapping(p.mapping); setPhase("mapping");
+      setPv(p);
+      setSheets(p.sheets_info.map((x, i) => ({ ...x, mode: { sales: "merge", customers: "upsert" }, open: i === 0 || p.sheets_info.length <= 2 })));
+      setPhase("mapping");
     } catch (e) { setErr((e as Error).message); setPhase("idle"); }
   };
 
-  const changeSheet = async (sheet: string) => {
-    if (!pv) return;
-    try {
-      const p = await api.get(`/imports/uploads/${pv.upload_id}/preview`, { sheet });
-      setPv({ ...pv, ...p }); setMapping(p.mapping);
-    } catch (e) { setErr((e as Error).message); }
-  };
+  const update = (i: number, patch: Partial<SheetState>) => setSheets((all) => all.map((x, j) => (j === i ? { ...x, ...patch } : x)));
+  const setField = (i: number, kind: "sales" | "customers", f: string, v: string | null) =>
+    setSheets((all) => all.map((x, j) => (j === i ? { ...x, mappings: { ...x.mappings, [kind]: { ...x.mappings[kind], [f]: v } } } : x)));
+  const active = sheets.filter((x) => x.kind === "sales" || x.kind === "customers");
+  const missingOf = (x: SheetState) => (x.kind === "sales" || x.kind === "customers") && pv
+    ? pv.required[x.kind].filter((f) => !x.mappings[x.kind as "sales"]?.[f]) : [];
+  const blocked = active.length === 0 || active.some((x) => missingOf(x).length > 0);
 
   const commit = async () => {
     if (!pv) return;
-    if (mode === "replace_all" && !confirm(t("imp.modes.replace_all") + "?")) return;
+    if (active.some((x) => x.mode[x.kind as "sales"] === "replace_all") && !confirm(t("imp.modes.replace_all") + "?")) return;
     setErr(null); setPhase("importing");
     try {
-      await api.post("/imports/commit", { upload_id: pv.upload_id, mapping, mode, sheet: pv.sheet });
-      setPv(null); setFile(null); setPhase("idle");
+      await api.post("/imports/commit", {
+        upload_id: pv.upload_id,
+        jobs: active.map((x) => ({ sheet: x.sheet, kind: x.kind, mapping: x.mappings[x.kind as "sales"], mode: x.mode[x.kind as "sales"] })),
+      });
+      setPv(null); setSheets([]); setFile(null); setPhase("idle");
       qc.invalidateQueries({ queryKey: ["imports"] });
     } catch (e) { setErr((e as Error).message); setPhase("mapping"); }
   };
@@ -101,7 +111,6 @@ export default function Import() {
   if (prevRunning.current && !running) { prevRunning.current = null; setTimeout(() => qc.invalidateQueries(), 0); }
   if (running) prevRunning.current = running.id;
 
-  const missing = pv?.required.filter((f) => !mapping[f]) ?? [];
 
   return (
     <>
@@ -142,48 +151,72 @@ export default function Import() {
         {(phase === "mapping" || phase === "importing") && pv && (
           <Card title={`${t("imp.mapping")} — ${pv.filename}`} help={t("imp.mappingHelp")}>
             {pv.duplicate_of && <div className="mb-4"><Notice kind="warning">{t("imp.duplicate", { id: pv.duplicate_of.id, date: fmtDate(pv.duplicate_of.finished_at) })}</Notice></div>}
-            {pv.sheets.length > 1 && (
-              <div className="mb-4 max-w-xs">
-                <label className="label">{t("imp.sheet")}</label>
-                <select className="input" value={pv.sheet ?? ""} onChange={(e) => changeSheet(e.target.value)}>
-                  {pv.sheets.map((s) => <option key={s}>{s}</option>)}
-                </select>
-              </div>
-            )}
-            <div className="grid sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-3">
-              {pv.fields.map((f) => (
-                <div key={f}>
-                  <label className="label">{t(`imp.fields.${f}`)}{pv.required.includes(f) && <span className="text-bad"> *</span>}</label>
-                  <select className={clsx("input", pv.required.includes(f) && !mapping[f] && "border-bad", mapping[f] && "bg-brand-soft/40")}
-                    value={mapping[f] ?? ""} onChange={(e) => setMapping({ ...mapping, [f]: e.target.value || null })}>
-                    <option value="">{t("imp.notMapped")}</option>
-                    {pv.columns.map((c) => <option key={c} value={c}>{c}</option>)}
-                  </select>
-                </div>
-              ))}
-            </div>
-
-            <div className="mt-5">
-              <div className="label">{t("imp.preview")}</div>
-              <DataTable rows={pv.sample.slice(0, 8)} maxHeight={260}
-                columns={pv.columns.map((c) => ({ key: c, label: c, render: (r: any) => (r[c] == null ? "" : String(r[c])) }))} />
-            </div>
-
-            <div className="mt-5">
-              <div className="label">{t("imp.mode")}</div>
-              <div className="space-y-2">
-                {pv.modes.map((m) => (
-                  <label key={m} className={clsx("flex items-center gap-2 text-sm cursor-pointer", m === "replace_all" && "text-bad")}>
-                    <input type="radio" className="accent-brand" checked={mode === m} onChange={() => setMode(m)} /> {t(`imp.modes.${m}`)}
-                  </label>
-                ))}
-              </div>
+            {sheets.length > 1 && <div className="text-sm font-semibold mb-3">{t("imp.sheetsFound", { n: sheets.length })}</div>}
+            <div className="space-y-4">
+              {sheets.map((x, i) => {
+                const k = x.kind === "sales" || x.kind === "customers" ? x.kind : null;
+                const missing = missingOf(x);
+                return (
+                  <div key={i} className={clsx("rounded-lg border p-4", k ? "border-line" : "border-dashed border-line bg-surface/50")}>
+                    <div className="flex flex-wrap items-center gap-3">
+                      <FileSpreadsheet size={18} className="text-brand" />
+                      <span className="font-semibold">{x.sheet ?? pv.filename}</span>
+                      {x.rows != null && <span className="text-xs text-muted">{t("imp.rowsApprox", { n: fmtInt(x.rows) })}</span>}
+                      <span className="text-xs text-muted">· {x.columns.length} cols</span>
+                      <div className="ms-auto flex items-center gap-2">
+                        <span className="text-xs text-muted">{t("imp.kind")}</span>
+                        <select className="input py-1.5 w-auto" value={x.kind} disabled={x.kind === "empty"}
+                          onChange={(e) => update(i, { kind: e.target.value as Kind, open: e.target.value !== "skip" })}>
+                          {(x.kind === "empty" ? ["empty"] : ["sales", "customers", "skip"]).map((o) => <option key={o} value={o}>{t(`imp.kinds.${o}`)}</option>)}
+                        </select>
+                      </div>
+                    </div>
+                    <div className={clsx("text-xs mt-2", x.kind_reason === "unknown" ? "text-warn" : "text-good")}>{t(`imp.kindReason.${x.kind_reason}`)}</div>
+                    {k && (
+                      <>
+                        {!x.open && missing.length === 0 ? (
+                          <button className="text-sm text-brand underline mt-2 cursor-pointer" onClick={() => update(i, { open: true })}>{t("imp.mapping")}</button>
+                        ) : (
+                          <>
+                            <div className="grid sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-3 mt-3">
+                              {pv.fields[k].map((f) => (
+                                <div key={f}>
+                                  <label className="label">{t(`imp.fields.${f}`)}{pv.required[k].includes(f) && <span className="text-bad"> *</span>}</label>
+                                  <select className={clsx("input", pv.required[k].includes(f) && !x.mappings[k]?.[f] && "border-bad", x.mappings[k]?.[f] && "bg-brand-soft/40")}
+                                    value={x.mappings[k]?.[f] ?? ""} onChange={(e) => setField(i, k, f, e.target.value || null)}>
+                                    <option value="">{t("imp.notMapped")}</option>
+                                    {x.columns.map((c) => <option key={c} value={c}>{c}</option>)}
+                                  </select>
+                                </div>
+                              ))}
+                            </div>
+                            <details className="mt-3">
+                              <summary className="text-sm text-muted cursor-pointer">{t("imp.showSample")}</summary>
+                              <div className="mt-2">
+                                <DataTable rows={x.sample.slice(0, 8)} maxHeight={260}
+                                  columns={x.columns.map((c) => ({ key: c, label: c, render: (r: any) => (r[c] == null ? "" : String(r[c])) }))} />
+                              </div>
+                            </details>
+                          </>
+                        )}
+                        <div className="mt-3 flex flex-wrap gap-x-5 gap-y-2">
+                          {pv.modes[k].map((m) => (
+                            <label key={m} className={clsx("flex items-center gap-2 text-sm cursor-pointer", m === "replace_all" && "text-bad", m === "replace_period" && "text-warn")}>
+                              <input type="radio" className="accent-brand" checked={x.mode[k] === m} onChange={() => update(i, { mode: { ...x.mode, [k]: m } })} /> {t(`imp.modes.${m}`)}
+                            </label>
+                          ))}
+                        </div>
+                      </>
+                    )}
+                  </div>
+                );
+              })}
             </div>
             <div className="flex gap-2 mt-5">
-              <button className="btn-primary" disabled={missing.length > 0 || phase === "importing"} onClick={commit}>
-                {phase === "importing" && <Loader2 size={16} className="animate-spin" />} {t("imp.start")}
+              <button className="btn-primary" disabled={blocked || phase === "importing"} onClick={commit}>
+                {phase === "importing" && <Loader2 size={16} className="animate-spin" />} {t("imp.importAll", { n: active.length })}
               </button>
-              <button className="btn-ghost" onClick={() => { setPv(null); setPhase("idle"); }}>{t("app.cancel")}</button>
+              <button className="btn-ghost" onClick={() => { setPv(null); setSheets([]); setPhase("idle"); }}>{t("app.cancel")}</button>
             </div>
           </Card>
         )}
@@ -206,6 +239,7 @@ export default function Import() {
             { key: "status", label: t("col.status"), render: (r) => r.status === "done" ? <Badge kind="active"><CheckCircle2 size={12} /> OK</Badge>
               : r.status === "failed" ? <span title={r.message}><Badge kind="inactive"><XCircle size={12} /> {r.message?.slice(0, 40)}</Badge></span>
               : r.status === "running" ? <Badge kind="attention">{Math.round(r.progress)}%</Badge> : <Badge>{r.status}</Badge> },
+            { key: "kind", label: t("imp.kind"), render: (r) => <Badge>{t(`imp.kinds.${r.kind ?? "sales"}`)}</Badge> },
             { key: "mode", label: t("imp.mode"), render: (r) => <span className="text-xs">{t(`imp.modes.${r.mode}`).split("(")[0]}</span> },
             { key: "rows_imported", label: t("imp.imported"), num: true, render: (r) => fmtInt(r.rows_imported) },
             { key: "rows_replaced", label: t("imp.replaced"), num: true, render: (r) => fmtInt(r.rows_replaced) },

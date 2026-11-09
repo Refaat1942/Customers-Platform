@@ -46,7 +46,8 @@ KEYWORDS = {
         "full name", "اسم العميل", "الاسم", "العميل",
     ],
     "address": [
-        "address", "customer address", "addr", "location", "street", "عنوان", "العنوان",
+        "full address", "address", "customer address", "addr", "location", "street", "عنوان",
+        "العنوان",
     ],
     "district": [
         "district", "area", "zone", "region", "neighborhood", "المنطقة", "منطقة", "الحي",
@@ -116,13 +117,55 @@ def _variants(keywords):
 VARIANTS = {k: _variants(v) for k, v in KEYWORDS.items()}
 
 
+# ---------------------------------------------------------------- customer lists (CRM exports)
+CUSTOMER_FIELDS = [
+    "phone", "name", "first_name", "last_name", "address", "region", "city", "district",
+    "area", "street", "building", "landmark", "email", "gender", "birth_date",
+]
+CUSTOMER_REQUIRED = ["phone"]
+
+CUSTOMER_KEYWORDS = {
+    "phone": KEYWORDS["phone"],
+    "name": ["full name", "fullname", "customer name", "client name", "name", "الاسم بالكامل",
+             "اسم العميل", "الاسم"],
+    "first_name": ["first name", "firstname", "frist name", "first", "fname", "given name",
+                   "الاسم الأول", "الاسم الاول"],
+    "last_name": ["last name", "lastname", "surname", "family name", "lname", "اسم العائلة",
+                  "الاسم الأخير"],
+    "address": ["full address", "fulladdress", "customer address", "address", "addr",
+                "العنوان بالكامل", "العنوان", "عنوان"],
+    "region": ["region", "governorate", "government", "state", "province", "المحافظة",
+               "محافظة"],
+    "city": ["city", "town", "المدينة", "مدينة"],
+    "district": ["district", "neighborhood", "neighbourhood", "zone", "الحي", "المنطقة", "منطقة"],
+    "area": ["area", "sub area", "compound", "قطاع"],
+    "street": ["street name", "street", "st", "road", "الشارع", "شارع"],
+    "building": ["building", "building no", "bldg", "villa", "عمارة", "مبنى"],
+    "landmark": ["landmark", "near", "علامة مميزة"],
+    "email": ["email", "e mail", "mail", "البريد الإلكتروني", "البريد"],
+    "gender": ["gender", "sex", "النوع", "الجنس"],
+    "birth_date": ["birth date", "birthdate", "date of birth", "dob", "birthday",
+                   "تاريخ الميلاد"],
+}
+CUSTOMER_VARIANTS = {k: _variants(v) for k, v in CUSTOMER_KEYWORDS.items()}
+
+
 def find_columns(columns, fuzzy=True, fuzzy_cutoff=0.78) -> dict:
-    """Return {field: source column name or None}."""
+    """Sales file: {field: source column name or None}."""
+    return match_columns(columns, FIELDS, VARIANTS, fuzzy, fuzzy_cutoff)
+
+
+def find_customer_columns(columns, fuzzy=True, fuzzy_cutoff=0.82) -> dict:
+    """Customer list: {field: source column name or None}."""
+    return match_columns(columns, CUSTOMER_FIELDS, CUSTOMER_VARIANTS, fuzzy, fuzzy_cutoff)
+
+
+def match_columns(columns, fields, variants, fuzzy=True, fuzzy_cutoff=0.78) -> dict:
     cleaned_map = {}
     for c in columns:
         cleaned_map.setdefault(clean_col_name(c), c)
 
-    mapped = {k: None for k in FIELDS}
+    mapped = {k: None for k in fields}
     used = set()
 
     def assign(field, orig):
@@ -130,31 +173,31 @@ def find_columns(columns, fuzzy=True, fuzzy_cutoff=0.78) -> dict:
         used.add(orig)
 
     # 1) exact match on cleaned names
-    for field in FIELDS:
-        for var in VARIANTS[field]:
+    for field in fields:
+        for var in variants[field]:
             orig = cleaned_map.get(var)
             if orig is not None and orig not in used:
                 assign(field, orig)
                 break
 
     # 2) substring match (keywords of 3+ chars, avoids "cat" in "location")
-    for field in FIELDS:
+    for field in fields:
         if mapped[field]:
             continue
         for cleaned, orig in cleaned_map.items():
             if orig in used:
                 continue
-            if any(len(v) >= 4 and v in cleaned for v in VARIANTS[field]):
+            if any(len(v) >= 4 and v in cleaned for v in variants[field]):
                 assign(field, orig)
                 break
 
     # 3) fuzzy match for typos
     if fuzzy:
-        for field in FIELDS:
+        for field in fields:
             if mapped[field]:
                 continue
             free = [c for c, o in cleaned_map.items() if o not in used]
-            for var in VARIANTS[field]:
+            for var in variants[field]:
                 if len(var) < 4:
                     continue
                 m = get_close_matches(var, free, n=1, cutoff=fuzzy_cutoff)

@@ -106,7 +106,8 @@ def reference_date(cur, f: Filters) -> date | None:
 
 # ====================================================================== customers
 CUSTOMER_COLUMNS = [
-    "phone", "name", "branch", "district", "total_spent", "visits", "quantity", "first_visit",
+    "phone", "name", "branch", "district", "total_spent", "visits", "quantity", "max_invoice",
+    "min_invoice", "median_invoice", "items_count", "fav_item", "first_visit",
     "last_visit", "visit_days", "branches_count", "top_sales_type", "top_material",
     "top_category", "top_season", "phone_valid", "avg_per_visit", "avg_days_between",
     "days_since", "status", "high_value", "loyal", "r_score", "f_score", "m_score", "segment",
@@ -119,7 +120,8 @@ CUSTOMER_SORTS = {
     "first_visit": "first_visit", "days_since": "days_since", "name": "name",
     "phone": "phone", "branch": "branch", "avg_per_visit": "avg_per_visit",
     "avg_days_between": "avg_days_between", "overdue_days": "overdue_days",
-    "expected_next": "expected_next", "segment": "segment",
+    "expected_next": "expected_next", "segment": "segment", "max_invoice": "max_invoice",
+    "min_invoice": "min_invoice", "items_count": "items_count", "quantity": "quantity",
 }
 
 SEGMENTS = ["champions", "loyal", "potential", "new", "promising", "cant_lose", "at_risk",
@@ -129,6 +131,15 @@ SEGMENTS = ["champions", "loyal", "potential", "new", "promising", "cant_lose", 
 def customers_cte(f: Filters, settings: dict, ref: date | None) -> tuple[str, list]:
     w, params = f.where()
     sql = f"""
+    inv AS (
+      SELECT phone, visit_key, sum(item_price) AS t
+      FROM sales WHERE phone IS NOT NULL AND {w} GROUP BY phone, visit_key
+    ),
+    invs AS (
+      SELECT phone, {R("max(t)")} AS max_invoice, {R("min(t)")} AS min_invoice,
+             {R("percentile_cont(0.5) WITHIN GROUP (ORDER BY t)")} AS median_invoice
+      FROM inv GROUP BY phone
+    ),
     base AS (
       SELECT phone,
         (array_agg(name ORDER BY invoice_date DESC) FILTER (WHERE name IS NOT NULL))[1] AS name,
@@ -145,18 +156,20 @@ def customers_cte(f: Filters, settings: dict, ref: date | None) -> tuple[str, li
         mode() WITHIN GROUP (ORDER BY material_group) AS top_material,
         mode() WITHIN GROUP (ORDER BY item_category) AS top_category,
         mode() WITHIN GROUP (ORDER BY season) AS top_season,
+        mode() WITHIN GROUP (ORDER BY coalesce(item_name, item_code)) AS fav_item,
+        count(DISTINCT coalesce(item_name, item_code)) AS items_count,
         bool_or(phone_valid) AS phone_valid
       FROM sales WHERE phone IS NOT NULL AND {w}
       GROUP BY phone
     ),
     calc AS (
-      SELECT base.*,
+      SELECT base.*, invs.max_invoice, invs.min_invoice, invs.median_invoice,
         {R("total_spent / nullif(visits, 0)")} AS avg_per_visit,
         CASE WHEN visit_days > 1
              THEN round(((last_visit - first_visit)::numeric / (visit_days - 1)), 1)::float8
         END AS avg_days_between,
         (?::date - last_visit) AS days_since
-      FROM base
+      FROM base JOIN invs USING (phone)
     ),
     scored AS (
       SELECT calc.*,
@@ -200,7 +213,7 @@ def customers_cte(f: Filters, settings: dict, ref: date | None) -> tuple[str, li
     tail = [s["active_days"], s["attention_days"], s["active_days"], s["attention_days"],
             s["high_value_spend"], s["loyalty_spend"], s["loyalty_visits"],
             s["attention_days"], s["active_days"]]
-    return sql, params + [ref] + tail
+    return sql, params + params + [ref] + tail
 
 
 def _customer_where(q=None, status=None, flag=None, segment=None, churn=None, ref=None):
@@ -269,11 +282,14 @@ def customer_profile(phone: str, f: Filters, settings: dict) -> dict | None:
     if not summary:
         return None
     summary["cid"] = cid(phone)
+    directory = db.one(cur, """SELECT name, address, region, city, district, area, email, gender,
+        birth_date FROM customer_directory WHERE phone = ?""", [phone])
     w, wp = f.where()
     base = f"FROM sales WHERE phone = ? AND {w}"
     bp = [phone] + wp
     return {
         "summary": summary,
+        "directory": directory,
         "reference_date": ref,
         "monthly": db.rows(cur, f"""SELECT to_char(date_trunc('month', day), 'YYYY-MM') AS month,
             {R("sum(item_price)")} AS sales, count(DISTINCT visit_key) AS visits
@@ -407,6 +423,10 @@ def _customer_health(f: Filters, settings: dict, ref) -> dict:
         churn = db.rows(cur, f"""SELECT churn_risk, count(*) AS customers,
             {R("sum(total_spent)")} AS sales, {R("sum(avg_per_visit)")} AS value_per_visit
             FROM cust_tmp GROUP BY churn_risk""")
+        directory = db.one(cur, """SELECT count(*) AS listed,
+            count(*) FILTER (WHERE NOT EXISTS (SELECT 1 FROM cust_tmp c WHERE c.phone = d.phone))
+              AS never_bought
+            FROM customer_directory d""")
         due = db.one(cur, """SELECT
             count(*) FILTER (WHERE expected_next BETWEEN ?::date AND ?::date + 7) AS due_soon,
             count(*) FILTER (WHERE overdue_days > 0) AS overdue,
@@ -420,7 +440,7 @@ def _customer_health(f: Filters, settings: dict, ref) -> dict:
                    AS bottom20_share FROM t""")
     finally:
         cur.execute("DROP TABLE IF EXISTS pg_temp.cust_tmp")
-    return {"rfm": rfm, "churn": churn, "due": due, "pareto": pareto}
+    return {"rfm": rfm, "churn": churn, "due": due, "pareto": pareto, "directory": directory}
 
 
 def insights(f: Filters, settings: dict) -> dict:
@@ -578,6 +598,57 @@ def alerts(ins: dict, settings: dict) -> list[dict]:
     return out
 
 
+# ====================================================================== products
+PRODUCT_SORTS = {"sales", "quantity", "invoices", "customers", "repeat_rate", "avg_price", "item",
+                 "last_sold", "share"}
+
+
+def products(f: Filters, *, q=None, sort="sales", desc=True, page=1, page_size=50,
+             limit_all=False) -> dict:
+    """Per product: sales, units, invoices, unique buyers, repeat buyers, price, best branch."""
+    cur = db.cursor()
+    w, p = f.where()
+    cond, cp = "", []
+    if q:
+        cond = "WHERE item ILIKE ? OR code ILIKE ? OR category ILIKE ?"
+        cp = [f"%{q}%"] * 3
+    sort = sort if sort in PRODUCT_SORTS else "sales"
+    sql = f"""
+      WITH s AS (SELECT coalesce(item_name, item_code) AS item, * FROM sales
+                 WHERE {w} AND coalesce(item_name, item_code) IS NOT NULL),
+           per_c AS (SELECT item, phone, count(DISTINCT visit_key) AS n FROM s
+                     WHERE phone IS NOT NULL GROUP BY 1, 2),
+           rep AS (SELECT item, count(*) AS buyers, count(*) FILTER (WHERE n >= 2) AS repeat_buyers,
+                          round(avg(n), 2)::float8 AS times_per_buyer
+                   FROM per_c GROUP BY item),
+           agg AS (SELECT item, min(item_code) AS code, mode() WITHIN GROUP (ORDER BY item_category)
+                          AS category, mode() WITHIN GROUP (ORDER BY material_group) AS material_group,
+                          {R("sum(item_price)")} AS sales, sum(quantity) AS quantity,
+                          count(DISTINCT visit_key) AS invoices,
+                          {R("sum(item_price) / nullif(sum(quantity), 0)")} AS avg_price,
+                          mode() WITHIN GROUP (ORDER BY branch) AS top_branch,
+                          min(day) AS first_sold, max(day) AS last_sold
+                   FROM s GROUP BY item),
+           t AS (SELECT agg.*, coalesce(rep.buyers, 0) AS customers,
+                        coalesce(rep.repeat_buyers, 0) AS repeat_buyers, rep.times_per_buyer,
+                        {R("100.0 * rep.repeat_buyers / nullif(rep.buyers, 0)")} AS repeat_rate,
+                        {R("100 * sales / nullif(sum(sales) OVER (), 0)")} AS share
+                 FROM agg LEFT JOIN rep USING (item))
+      SELECT *, count(*) OVER () AS _total FROM t {cond}
+      ORDER BY {sort} {'DESC' if desc else 'ASC'} NULLS LAST, item"""
+    sql += " LIMIT 1048000" if limit_all else \
+        f" LIMIT {int(page_size)} OFFSET {int((page - 1) * page_size)}"
+    rows = db.rows(cur, sql, p + cp)
+    total = rows[0]["_total"] if rows else 0
+    for r in rows:
+        r.pop("_total", None)
+    by_category = db.rows(cur, f"""SELECT coalesce(item_category, material_group, '-') AS category,
+        {R("sum(item_price)")} AS sales, count(DISTINCT coalesce(item_name, item_code)) AS products,
+        count(DISTINCT phone) AS customers FROM sales WHERE {w}
+        GROUP BY 1 ORDER BY sales DESC LIMIT 30""", p) if page == 1 and not limit_all else []
+    return {"rows": rows, "total": total, "by_category": by_category}
+
+
 # ====================================================================== area
 def area(f: Filters, min_customers: int = 5) -> dict:
     cur = db.cursor()
@@ -638,6 +709,8 @@ def meta(allowed_branches: list[str] | None) -> dict:
         ).fetchall()]
 
     rng = cur.execute(f"SELECT min(day), max(day), count(*) FROM sales WHERE {w}", p).fetchone()
-    return {"branches": distinct("branch"), "types": distinct("invoice_type"),
+    directory = cur.execute("SELECT count(*) FROM customer_directory").fetchone()[0]
+    return {"directory_customers": directory,
+            "branches": distinct("branch"), "types": distinct("invoice_type"),
             "districts": distinct("district"), "seasons": SEASON_ORDER,
             "date_min": rng[0], "date_max": rng[1], "rows": rng[2]}

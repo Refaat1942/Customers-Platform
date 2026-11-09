@@ -219,3 +219,105 @@ def test_branding_logo(client):
     assert r.json()["app_name"] == "Lotus Pharmacies"
     assert client.post("/api/branding/logo",
                        files={"file": ("x.svg", b"<svg/>", "image/svg+xml")}).status_code == 400
+
+
+def _commit_and_wait(client, up, kind, mode, mapping=None):
+    imp = client.post("/api/imports/commit", json={
+        "upload_id": up["upload_id"], "kind": kind, "mapping": mapping or up["mappings"][kind],
+        "mode": mode})
+    assert imp.status_code == 200, imp.text
+    for _ in range(300):
+        st = client.get(f"/api/imports/{imp.json()['import_id']}").json()
+        if st["status"] != "running":
+            return st
+        time.sleep(0.1)
+    raise AssertionError("import timed out")
+
+
+def test_customer_list_detected_and_linked(client):
+    import pandas as pd
+    first = client.get("/api/customers", params={"page_size": 2}).json()["rows"]
+    rows = [{"Phone Number": r["phone"][1:], "Frist Name": "أحمد", "Last Name": f"Test{i}",
+             "Region": "Cairo", "City": "New Cairo", "District": "Fifth Settlement",
+             "Area": "Area 5", "Street Name": "90 St", "Building": "12", "Floor": "3",
+             "Flat Number": "7", "Landmark": "", "Full Address": "Cairo, New Cairo, 90 St"}
+            for i, r in enumerate(first)]
+    rows.append({**rows[0], "Phone Number": "1099999999", "Last Name": "NoSales"})
+    buf = io.BytesIO()
+    pd.DataFrame(rows).to_excel(buf, index=False)
+    up = upload(client, buf.getvalue(), "RMS Customer.xlsx")
+    assert up["kind"] == "customers", up["kind_reason"]
+    m = up["mappings"]["customers"]
+    assert m["phone"] == "Phone Number" and m["first_name"] == "Frist Name"
+    assert m["address"] == "Full Address" and m["district"] == "District"
+    st = _commit_and_wait(client, up, "customers", "upsert")
+    assert st["status"] == "done", st
+    assert st["rows_imported"] == 3
+
+    prof = client.get(f"/api/customers/{first[0]['cid']}").json()
+    assert prof["directory"]["city"] == "New Cairo"
+    assert prof["summary"]["district"] == "Fifth Settlement"  # sales enriched from the list
+    ins = client.get("/api/insights").json()
+    assert ins["directory"]["listed"] == 3 and ins["directory"]["never_bought"] == 1
+
+
+def test_sales_detected_from_values_with_odd_headers(client):
+    import pandas as pd
+    from datetime import datetime
+    df = pd.DataFrame({"Col A": ["01012345678", "01198765432"] * 10,
+                       "Col B": [datetime(2026, 1, d + 1) for d in range(20)],
+                       "Col C": [125.5, 99.75] * 10, "Col D": ["x", "y"] * 10})
+    buf = io.BytesIO()
+    df.to_excel(buf, index=False)
+    up = upload(client, buf.getvalue(), "odd.xlsx")
+    assert up["kind"] == "sales"
+    m = up["mapping"]
+    assert (m["phone"], m["invoice_date"], m["item_price"]) == ("Col A", "Col B", "Col C")
+
+
+def test_customer_invoice_stats_and_products(client):
+    r = client.get("/api/customers", params={"page_size": 5, "sort": "max_invoice"}).json()["rows"]
+    assert r and all(x["max_invoice"] >= x["min_invoice"] for x in r)
+    assert r[0]["items_count"] >= 1 and r[0]["fav_item"]
+    p = client.get("/api/products").json()
+    assert p["total"] >= 5 and p["rows"][0]["sales"] >= p["rows"][-1]["sales"]
+    assert p["rows"][0]["customers"] >= p["rows"][0]["repeat_buyers"]
+    assert client.get("/api/products", params={"export": "true", "lang": "ar"}).content[:2] == b"PK"
+
+
+def test_multi_sheet_workbook(client):
+    import pandas as pd
+    from .sample_data import make_rows
+    sales = make_rows(n_customers=6, seed=21)
+    cust = pd.DataFrame({"Mobile": sales["Mobile No"].unique()[:4], "Full Name": ["A", "B", "C", "D"],
+                         "City": ["Giza"] * 4, "District": ["Dokki"] * 4})
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf) as xw:
+        sales.to_excel(xw, sheet_name="Sales", index=False)
+        cust.to_excel(xw, sheet_name="Customers", index=False)
+        pd.DataFrame().to_excel(xw, sheet_name="Empty", index=False)
+    up = upload(client, buf.getvalue(), "book.xlsx")
+    kinds = {s["sheet"]: s["kind"] for s in up["sheets_info"]}
+    assert kinds == {"Sales": "sales", "Customers": "customers", "Empty": "empty"}
+    jobs = [{"sheet": s["sheet"], "kind": s["kind"], "mapping": s["mapping"],
+             "mode": "replace_period" if s["kind"] == "sales" else "upsert"}
+            for s in up["sheets_info"] if s["kind"] in ("sales", "customers")]
+    r = client.post("/api/imports/commit", json={"upload_id": up["upload_id"], "jobs": jobs})
+    assert r.status_code == 200, r.text
+    ids = r.json()["import_ids"]
+    for _ in range(300):
+        st = [client.get(f"/api/imports/{i}").json() for i in ids]
+        if all(x["status"] != "running" for x in st):
+            break
+        time.sleep(0.1)
+    assert all(x["status"] == "done" for x in st), st
+    assert {x["kind"] for x in st} == {"sales", "customers"}
+
+
+def test_merge_mode_skips_duplicates_and_deletes_nothing(client):
+    before = client.get("/api/sales", params={"page_size": 1}).json()["total"]
+    _, st = _import(client, client.sample, mode="merge")
+    assert st["status"] == "done" and st["rows_replaced"] == 0
+    after = client.get("/api/sales", params={"page_size": 1}).json()["total"]
+    assert after >= before  # nothing deleted; already-loaded lines skipped
+    assert st["rows_skipped"] > 0

@@ -64,6 +64,12 @@ export default function Insights() {
             <Kpi label={t("ins.multiBranch")} value={fmtInt(d.due.multi_branch)} />
             <Kpi label={t("ins.pareto")} value={fmtPct(d.pareto?.top20_share)} sub={t("ins.paretoOf")} />
           </div>
+          {d.directory?.listed > 0 && (
+            <div className="grid grid-cols-2 gap-4">
+              <Kpi label={t("dir.listed")} value={fmtInt(d.directory.listed)} />
+              <Kpi label={t("dir.neverBought")} value={fmtInt(d.directory.never_bought)} sub={fmtPct((100 * d.directory.never_bought) / d.directory.listed)} />
+            </div>
+          )}
 
           <Card title={t("ins.rfm")} help={t("ins.rfmHelp")}>
             <div className="grid sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-3">

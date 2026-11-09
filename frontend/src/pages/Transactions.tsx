@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { Search } from "lucide-react";
 import { api } from "../lib/api";
 import { useFilters } from "../lib/filters";
@@ -14,7 +14,8 @@ export default function Transactions() {
   const { t } = useTranslation();
   const { params, key } = useFilters();
   const nav = useNavigate();
-  const [text, setText] = useState("");
+  const [sp] = useSearchParams();
+  const [text, setText] = useState(sp.get("q") ?? "");
   const [q, setQ] = useState("");
   const [page, setPage] = useState(1);
   const [sort, setSort] = useState("invoice_date");

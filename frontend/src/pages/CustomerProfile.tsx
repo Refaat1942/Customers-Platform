@@ -41,15 +41,25 @@ export default function CustomerProfile() {
           <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-6 gap-4">
             <Kpi label={t("col.total_spent")} value={fmtMoney(s.total_spent)} />
             <Kpi label={t("col.visits")} value={fmtInt(s.visits)} />
-            <Kpi label={t("col.avg_per_visit")} value={fmtMoney(s.avg_per_visit)} />
+            <Kpi label={t("col.avg_per_visit")} value={fmtMoney(s.avg_per_visit)}
+              sub={`${t("col.max_invoice")}: ${fmtMoney(s.max_invoice)} · ${t("col.min_invoice")}: ${fmtMoney(s.min_invoice)}`} />
             <Kpi label={t("col.last_visit")} value={fmtDate(s.last_visit)} sub={`${fmtInt(s.days_since)} ${i18n.language === "ar" ? "يوم" : "days ago"}`} />
             <Kpi label={t("col.avg_days_between")} value={fmtNum(s.avg_days_between)} sub={`${t("col.first_visit")}: ${fmtDate(s.first_visit)}`} />
             <Kpi label={t("col.expected_next")} value={fmtDate(s.expected_next)}
               sub={s.overdue_days > 0 ? `${fmtInt(s.overdue_days)} ${t("col.overdue_days")}` : undefined} />
           </div>
 
-          <div className="card p-5 grid sm:grid-cols-2 lg:grid-cols-5 gap-4 text-sm">
-            {(["branch", "district", "top_category", "top_material", "top_sales_type"] as const).map((k) => (
+          {d.directory && (
+            <Card title={t("dir.title")}>
+              <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-4 text-sm">
+                {(["address", "region", "city", "area", "email"] as const).filter((k) => d.directory[k]).map((k) => (
+                  <div key={k} className={k === "address" ? "sm:col-span-2" : ""}><div className="text-muted text-xs">{t(`dir.${k}`)}</div><div className="font-semibold">{d.directory[k]}</div></div>
+                ))}
+              </div>
+            </Card>
+          )}
+          <div className="card p-5 grid sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-7 gap-4 text-sm">
+            {(["branch", "district", "fav_item", "items_count", "top_category", "top_material", "top_sales_type"] as const).map((k) => (
               <div key={k}><div className="text-muted text-xs">{t(`col.${k}`)}</div><div className="font-semibold">{s[k] ?? "–"}</div></div>
             ))}
           </div>
