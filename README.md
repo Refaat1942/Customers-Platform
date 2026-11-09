@@ -67,7 +67,7 @@ curl -fsSL https://get.docker.com | sh
 
 ### 2. Get the code
 ```bash
-git clone https://github.com/refaat1942/customers-platform.git /opt/customers-platform
+git clone -b claude/compassionate-mccarthy-z04lu3 https://github.com/refaat1942/customers-platform.git /opt/customers-platform
 ```
 The repository is private, so GitHub will ask for a username and a **personal access token** as the password
 (GitHub → Settings → Developer settings → Personal access tokens).
@@ -89,7 +89,9 @@ under Settings → AI.
 ```bash
 docker compose up -d --build
 ```
-The first build takes a few minutes. Check that it is running:
+The first build takes 1-3 minutes (it only installs Python packages; the website is already built).
+If it seems stuck, press Ctrl+C and run `docker compose build --progress=plain` to see each step.
+Check that it is running:
 ```bash
 docker compose ps
 ```
@@ -155,6 +157,9 @@ cd backend && DATABASE_URL=postgresql://user:pass@localhost/customers ../.venv/b
 cd frontend && npm install && npm run dev
 ```
 The dev website runs on http://localhost:5173 and forwards `/api` to port 1100.
+
+The production website is served from the pre-built `frontend/dist` (committed to git, so the VPS needs no
+Node.js). After changing anything in `frontend/`, run `npm run build` there and commit `frontend/dist`.
 
 Tests (they use a separate database, e.g. `customers_test`, which is wiped on every run):
 ```bash
