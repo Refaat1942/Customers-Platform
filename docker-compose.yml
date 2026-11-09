@@ -23,7 +23,7 @@ services:
       -c random_page_cost=1.1
     # only reachable from the VPS itself (use an SSH tunnel for pgAdmin / DBeaver)
     ports:
-      - "127.0.0.1:5432:5432"
+      - "127.0.0.1:${DB_PORT:-5433}:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U customers -d customers"]
       interval: 5s

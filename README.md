@@ -120,11 +120,11 @@ Backups go to `/opt/customers-platform/backups/` (last 14 days are kept). Restor
 `deploy/restore.sh backups/<file>.sql.gz`.
 
 ### Connect to PostgreSQL directly (pgAdmin / DBeaver)
-The database listens only on the VPS itself (127.0.0.1:5432), not on the internet. Use an SSH tunnel:
+The database listens only on the VPS itself (127.0.0.1:5433), not on the internet. Use an SSH tunnel:
 ```bash
-ssh -L 5432:127.0.0.1:5432 root@187.124.177.138
+ssh -L 5433:127.0.0.1:5433 root@187.124.177.138
 ```
-Then connect to `localhost:5432`, database `customers`, user `customers`, with the password from `.env`.
+Then connect to `localhost:5433`, database `customers`, user `customers`, with the password from `.env`.
 
 ### Recommended: HTTPS with a domain
 Port 1100 uses plain HTTP, so passwords travel unencrypted. If you point a domain (e.g. `crm.yourdomain.com`)
