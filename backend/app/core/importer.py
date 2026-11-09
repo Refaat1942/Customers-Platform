@@ -2,13 +2,18 @@
 
 import hashlib
 import json
-from datetime import datetime
+import shutil
+import zipfile
+from datetime import date, datetime
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from python_calamine import CalamineWorkbook
 
-from .. import db
+import psycopg
+
+from .. import config, db
 from .address import extract_district
 from .columns import FIELDS, REQUIRED_FIELDS, clean_col_name, find_columns
 from .phone import is_valid_egy_mobile, normalize_egy_phone
@@ -23,20 +28,121 @@ TEXT_FIELDS = ["name", "branch", "address", "district", "invoice_no", "invoice_t
 
 
 # ---------------------------------------------------------------- reading
-def read_file(path: Path, nrows=None) -> pd.DataFrame:
-    suffix = path.suffix.lower()
-    if suffix == ".csv":
+EXCEL_SUFFIXES = (".xlsx", ".xlsm", ".xls", ".xlsb")
+CHUNK_ROWS = 100_000
+
+
+def unpack(path: Path) -> Path:
+    """Large files are often zipped (10x smaller upload). Extract the first Excel/CSV inside."""
+    if path.suffix.lower() != ".zip":
+        return path
+    with zipfile.ZipFile(path) as z:
+        names = [n for n in z.namelist() if Path(n).suffix.lower() in EXCEL_SUFFIXES + (".csv",)
+                 and not n.startswith("__MACOSX")]
+        if not names:
+            raise ValueError("The zip file has no Excel or CSV file inside")
+        target = path.with_name(path.stem + "_unzipped" + Path(names[0]).suffix.lower())
+        with z.open(names[0]) as src, target.open("wb") as dst:
+            shutil.copyfileobj(src, dst, 1024 * 1024)
+    path.unlink(missing_ok=True)
+    return target
+
+
+def sheet_names(path: Path) -> list[str]:
+    if path.suffix.lower() == ".csv":
+        return []
+    return CalamineWorkbook.from_path(str(path)).sheet_names
+
+
+def _csv_encoding(path: Path) -> str:
+    with path.open("rb") as fh:
+        sample = fh.read(1024 * 1024)
+    for enc in ("utf-8-sig", "cp1256"):
         try:
-            df = pd.read_csv(path, nrows=nrows, dtype=object, encoding="utf-8-sig")
+            sample.decode(enc)
+            return enc
         except UnicodeDecodeError:
-            df = pd.read_csv(path, nrows=nrows, dtype=object, encoding="cp1256")
-    elif suffix == ".xls":
-        df = pd.read_excel(path, nrows=nrows, engine="xlrd")
-    else:
-        df = pd.read_excel(path, nrows=nrows, engine="openpyxl")
-    df.columns = [str(c).strip() for c in df.columns]
-    df = df.loc[:, [c for c in df.columns if not c.startswith("Unnamed:")] or df.columns]
-    return df
+            continue
+    return "latin-1"
+
+
+def _csv_reader(path: Path, nrows=None, chunksize=None):
+    enc = _csv_encoding(path)
+    with path.open(encoding=enc, errors="replace") as fh:
+        head = fh.readline()
+    sep = max([",", ";", "\t", "|"], key=head.count)
+    return pd.read_csv(path, nrows=nrows, chunksize=chunksize, dtype=object, encoding=enc,
+                       sep=sep, encoding_errors="replace")
+
+
+def _clean_header(cols) -> list[str]:
+    out, seen = [], {}
+    for i, c in enumerate(cols):
+        c = str(c).strip() if c not in (None, "") else f"Column {i + 1}"
+        if c in seen:
+            seen[c] += 1
+            c = f"{c} ({seen[c]})"
+        else:
+            seen[c] = 0
+        out.append(c)
+    return out
+
+
+def iter_chunks(path: Path, sheet: str | None = None, chunk_rows=CHUNK_ROWS):
+    """Yield (DataFrame chunk, estimated total rows). Never loads a CSV fully in memory."""
+    if path.suffix.lower() == ".csv":
+        with path.open("rb") as fh:
+            sample = fh.read(4 * 1024 * 1024)
+        bytes_per_row = len(sample) / max(sample.count(b"\n"), 1)
+        total = int(path.stat().st_size / max(bytes_per_row, 1))
+        for chunk in _csv_reader(path, chunksize=chunk_rows):
+            chunk.columns = _clean_header(chunk.columns)
+            yield chunk, total
+        return
+
+    wb = CalamineWorkbook.from_path(str(path))
+    sh = wb.get_sheet_by_name(sheet or wb.sheet_names[0])
+    total = max(sh.total_height - 1, 0)
+    it = sh.iter_rows()
+    header = None
+    for row in it:  # first non-empty row is the header
+        if any(v not in (None, "") for v in row):
+            header = _clean_header(row)
+            break
+    if header is None:
+        return
+    buf = []
+    for row in it:
+        buf.append(row)
+        if len(buf) >= chunk_rows:
+            yield pd.DataFrame(buf, columns=header), total
+            buf = []
+    if buf:
+        yield pd.DataFrame(buf, columns=header), total
+
+
+def read_file(path: Path, nrows=None, sheet: str | None = None) -> pd.DataFrame:
+    """Small reads (preview, tests)."""
+    if path.suffix.lower() == ".csv":
+        df = _csv_reader(path, nrows=nrows)
+        df.columns = _clean_header(df.columns)
+        return df
+    wb = CalamineWorkbook.from_path(str(path))
+    sh = wb.get_sheet_by_name(sheet or wb.sheet_names[0])
+    data = sh.to_python(nrows=(nrows + 5) if nrows else None)
+    data = [r for r in data if any(v not in (None, "") for v in r)]
+    if not data:
+        return pd.DataFrame()
+    df = pd.DataFrame(data[1:], columns=_clean_header(data[0]))
+    return df.head(nrows) if nrows else df
+
+
+def file_sha256(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as fh:
+        for block in iter(lambda: fh.read(4 * 1024 * 1024), b""):
+            h.update(block)
+    return h.hexdigest()
 
 
 def header_signature(columns) -> str:
@@ -67,10 +173,14 @@ def _jsonable(v):
     return v if isinstance(v, (int, float, bool)) else str(v)
 
 
-def preview(path: Path) -> dict:
-    df = read_file(path, nrows=20)
+def preview(path: Path, sheet: str | None = None) -> dict:
+    sheets = sheet_names(path)
+    sheet = sheet or (sheets[0] if sheets else None)
+    df = read_file(path, nrows=20, sheet=sheet)
     cols = list(df.columns)
     return {
+        "sheets": sheets,
+        "sheet": sheet,
         "columns": cols,
         "mapping": suggest_mapping(cols),
         "sample": [{c: _jsonable(v) for c, v in r.items()} for r in df.to_dict("records")],
@@ -79,17 +189,31 @@ def preview(path: Path) -> dict:
 
 # ---------------------------------------------------------------- cleaning
 def _parse_dates(s: pd.Series) -> pd.Series:
+    """Excel datetimes, Excel serial numbers, ISO text (yyyy-mm-dd) and Egyptian dd/mm/yyyy text."""
     if pd.api.types.is_datetime64_any_dtype(s):
         return pd.to_datetime(s, errors="coerce")
-    num = pd.to_numeric(s, errors="coerce")
     out = pd.Series(pd.NaT, index=s.index, dtype="datetime64[ns]")
+
+    is_dt = s.map(lambda v: isinstance(v, (datetime, date)))
+    if is_dt.any():
+        out[is_dt] = pd.to_datetime(s[is_dt], errors="coerce")
+
+    rest = ~is_dt & s.notna()
+    num = pd.to_numeric(s[rest], errors="coerce")
     serial = num.between(20000, 80000)  # Excel serial day numbers
     if serial.any():
-        out[serial] = pd.to_datetime(num[serial], unit="D", origin="1899-12-30")
-    rest = ~serial & s.notna()
+        idx = num[serial].index
+        out[idx] = pd.to_datetime(num[serial], unit="D", origin="1899-12-30")
+        rest[idx] = False
+
     if rest.any():
-        out[rest] = pd.to_datetime(s[rest].astype(str).str.strip(), errors="coerce",
-                                   dayfirst=True, format="mixed")
+        txt = s[rest].astype(str).str.strip()
+        iso = txt.str.match(r"^\d{4}-\d{1,2}-\d{1,2}")
+        if iso.any():
+            out[txt[iso].index] = pd.to_datetime(txt[iso], errors="coerce", format="ISO8601")
+        if (~iso).any():
+            out[txt[~iso].index] = pd.to_datetime(txt[~iso], errors="coerce", dayfirst=True,
+                                                  format="mixed")
     return out
 
 
@@ -162,67 +286,111 @@ def build_frame(raw: pd.DataFrame, mapping: dict) -> tuple[pd.DataFrame, dict]:
 
 
 # ---------------------------------------------------------------- running
-def run_import(import_id: int, path: Path, mapping: dict, mode: str):
-    cur = db.cursor()
-    try:
-        raw = read_file(path)
-        missing = [f for f in REQUIRED_FIELDS if not mapping.get(f) or mapping[f] not in raw.columns]
-        if missing:
-            raise ValueError(f"Missing required columns: {', '.join(missing)}")
+SALES_COLS = ["import_id", "phone", "phone_valid", "name", "branch", "address", "district",
+              "invoice_no", "visit_key", "invoice_date", "day", "season", "invoice_type",
+              "item_code", "item_name", "material_group", "item_category", "quantity",
+              "item_unit", "item_price"]
 
-        frame, stats = build_frame(raw, mapping)
+
+def _progress(cur, import_id, stage, pct, **extra):
+    sets = ", ".join(["stage=?", "progress=?"] + [f"{k}=?" for k in extra])
+    cur.execute(f"UPDATE imports SET {sets} WHERE id=?",
+                [stage, round(pct, 1), *extra.values(), import_id])
+
+
+def _copy_frame(cur, table: str, frame: pd.DataFrame):
+    """Bulk load with PostgreSQL COPY (much faster than INSERTs)."""
+    obj = frame.astype(object).where(frame.notna(), None)
+    with cur.copy(f"COPY {table} ({', '.join(SALES_COLS)}) FROM STDIN") as cp:
+        for row in obj.itertuples(index=False, name=None):
+            cp.write_row(row)
+
+
+def _warm_cache():
+    """Pre-compute the default dashboard so the first page view after an import is instant."""
+    from . import analytics as an
+    try:
+        f, s = an.Filters(), db.get_settings()
+        db.cached(("summary", f.key()), lambda: an.summary(f, s))
+        db.cached(("insights", f.key()), lambda: an.insights(f, s))
+    except Exception:  # noqa: BLE001 - only an optimisation
+        pass
+
+
+def run_import(import_id: int, path: Path, mapping: dict, mode: str, sheet: str | None = None):
+    """Stream the file in 100k-row chunks into a staging table, then swap it in atomically."""
+    conn = psycopg.connect(config.DATABASE_URL, autocommit=True)
+    cur = db.Cursor(conn)
+    stage_tbl = f"staging_{import_id}"
+    try:
+        stats = {"rows_read": 0, "invalid_dates": 0, "invalid_phones": 0}
+        cur.execute(f"DROP TABLE IF EXISTS {stage_tbl}")
+        cur.execute(f"CREATE UNLOGGED TABLE {stage_tbl} (LIKE sales)")
+        _progress(cur, import_id, "reading", 1)
+
+        checked = False
+        for chunk, total in iter_chunks(path, sheet):
+            if not checked:
+                missing = [f for f in REQUIRED_FIELDS
+                           if not mapping.get(f) or mapping[f] not in chunk.columns]
+                if missing:
+                    raise ValueError(f"Missing required columns: {', '.join(missing)}")
+                checked = True
+            frame, st = build_frame(chunk, mapping)
+            for k in stats:
+                stats[k] += st[k]
+            _copy_frame(cur, stage_tbl, frame.assign(import_id=import_id)[SALES_COLS])
+            pct = 5 + 85 * min(stats["rows_read"] / max(total, 1), 1)
+            _progress(cur, import_id, "cleaning", pct, rows_read=stats["rows_read"])
+
+        if not checked:
+            raise ValueError("The file is empty")
+
+        _progress(cur, import_id, "saving", 92)
+        cur.execute(f"ANALYZE {stage_tbl}")
         skipped = stats["invalid_dates"]
         replaced = 0
+        with conn.transaction():
+            if mode == "replace_all":
+                replaced = cur.execute("SELECT count(*) FROM sales").fetchone()[0]
+                cur.execute("TRUNCATE sales")
+            elif mode == "append_new":
+                last = cur.execute("SELECT max(invoice_date) FROM sales").fetchone()[0]
+                if last is not None:
+                    skipped += cur.execute(
+                        f"SELECT count(*) FROM {stage_tbl} WHERE invoice_date <= ?", [last]
+                    ).fetchone()[0]
+                    cur.execute(f"DELETE FROM {stage_tbl} WHERE invoice_date <= ?", [last])
+            elif mode == "replace_period":
+                # replace rows of the same branches inside the file's date range (safe re-upload)
+                cond = (f"day BETWEEN (SELECT min(day) FROM {stage_tbl}) AND "
+                        f"(SELECT max(day) FROM {stage_tbl}) AND "
+                        f"(branch IN (SELECT DISTINCT branch FROM {stage_tbl} WHERE branch IS NOT NULL)"
+                        f" OR (branch IS NULL AND EXISTS "
+                        f"(SELECT 1 FROM {stage_tbl} WHERE branch IS NULL)))")
+                replaced = cur.execute(f"SELECT count(*) FROM sales WHERE {cond}").fetchone()[0]
+                cur.execute(f"DELETE FROM sales WHERE {cond}")
 
-        cur.execute("BEGIN TRANSACTION")
-        if mode == "replace_all":
-            replaced = cur.execute("SELECT count(*) FROM sales").fetchone()[0]
-            cur.execute("DELETE FROM sales")
-        elif mode == "append_new":
-            last = cur.execute("SELECT max(invoice_date) FROM sales").fetchone()[0]
-            if last is not None:
-                keep = frame["invoice_date"] > pd.Timestamp(last)
-                skipped += int((~keep).sum())
-                frame = frame[keep]
-        elif mode == "replace_period" and len(frame):
-            # delete existing rows of the same branches inside the file's date range
-            dmin, dmax = frame["day"].min(), frame["day"].max()
-            branches = [b for b in frame["branch"].dropna().unique().tolist()]
-            has_null = bool(frame["branch"].isna().any())
-            cond = "day BETWEEN ? AND ? AND (branch IN (SELECT unnest(?::VARCHAR[]))"
-            cond += " OR branch IS NULL)" if has_null else ")"
-            params = [dmin.date(), dmax.date(), branches]
-            replaced = cur.execute(f"SELECT count(*) FROM sales WHERE {cond}", params).fetchone()[0]
-            cur.execute(f"DELETE FROM sales WHERE {cond}", params)
-
-        frame = frame.assign(import_id=import_id)
-        cols = ["import_id", "phone", "phone_valid", "name", "branch", "address", "district",
-                "invoice_no", "visit_key", "invoice_date", "day", "season", "invoice_type",
-                "item_code", "item_name", "material_group", "item_category", "quantity",
-                "item_unit", "item_price"]
-        frame = frame[cols]
-        cur.register("_import_frame", frame)
-        cur.execute(f"INSERT INTO sales ({', '.join(cols)}) SELECT {', '.join(cols)} FROM _import_frame")
-        cur.unregister("_import_frame")
-
-        cur.execute(
-            """UPDATE imports SET status='done', finished_at=current_timestamp,
-               rows_read=?, rows_imported=?, rows_skipped=?, rows_replaced=?,
-               invalid_phones=?, invalid_dates=?, date_from=?, date_to=? WHERE id=?""",
-            [stats["rows_read"], len(frame), skipped, int(replaced), stats["invalid_phones"],
-             stats["invalid_dates"],
-             frame["day"].min().date() if len(frame) else None,
-             frame["day"].max().date() if len(frame) else None, import_id],
-        )
-        cur.execute("COMMIT")
+            cur.execute(f"INSERT INTO sales SELECT * FROM {stage_tbl}")
+            imported, dmin, dmax = cur.execute(
+                f"SELECT count(*), min(day), max(day) FROM {stage_tbl}").fetchone()
+            cur.execute(f"DROP TABLE {stage_tbl}")
+            cur.execute(
+                """UPDATE imports SET status='done', stage='finished', progress=100,
+                   finished_at=now(), rows_read=?, rows_imported=?, rows_skipped=?,
+                   rows_replaced=?, invalid_phones=?, invalid_dates=?, date_from=?, date_to=?
+                   WHERE id=?""",
+                [stats["rows_read"], imported, skipped, int(replaced), stats["invalid_phones"],
+                 stats["invalid_dates"], dmin, dmax, import_id])
+        cur.execute("ANALYZE sales")
+        db.bump_version()
+        _warm_cache()
     except Exception as e:  # noqa: BLE001 - reported to the user
-        try:
-            cur.execute("ROLLBACK")
-        except Exception:  # noqa: BLE001
-            pass
-        cur.execute("UPDATE imports SET status='failed', message=?, finished_at=current_timestamp "
+        cur.execute(f"DROP TABLE IF EXISTS {stage_tbl}")
+        cur.execute("UPDATE imports SET status='failed', message=?, finished_at=now() "
                     "WHERE id=?", [str(e)[:1000], import_id])
     finally:
+        conn.close()
         try:
             path.unlink(missing_ok=True)
         except OSError:

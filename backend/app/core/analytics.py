@@ -1,20 +1,59 @@
-"""All analytics as SQL over the `sales` table.
+"""All analytics as SQL over the `sales` table (PostgreSQL).
 
 One definition of every metric, shared by every page:
   * visit / invoice  = distinct invoice_no, or (phone, day, branch) when the file has no invoice number
   * total spend      = SUM(item_price)
-  * days since visit = reference date - last visit day, where the reference date is the end of the
-                       selected date range, or the latest date in the data (not "today", so an old
+  * days since visit = reference date - last visit, where the reference date is the end of the
+                       selected range, or the latest date in the data (not "today", so an old
                        import does not make everybody look inactive)
   * status           = active / attention / inactive from the Settings thresholds
+  * RFM segment      = recency / frequency / money quintiles -> champions, loyal, at_risk, ...
+  * churn risk       = compares days since last visit with the customer's OWN visit rhythm
 """
 
+import hashlib
+import os
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from datetime import date, timedelta
 
-from .. import db
+from .. import config, db
 
 SEASON_ORDER = ["Winter", "Spring", "Summer", "Autumn"]
+
+# independent queries of one page run side by side (each worker thread has its own connection)
+_pool = ThreadPoolExecutor(max_workers=int(os.environ.get("QUERY_WORKERS", "4")),
+                           thread_name_prefix="q")
+
+
+def parallel(tasks: dict) -> dict:
+    futures = {k: _pool.submit(fn) for k, fn in tasks.items()}
+    return {k: f.result() for k, f in futures.items()}
+
+
+def q_rows(sql, params=None):
+    return lambda: db.rows(db.cursor(), sql, params)
+
+
+def q_one(sql, params=None):
+    return lambda: db.one(db.cursor(), sql, params)
+
+
+def R(expr: str) -> str:
+    """Round to 2 decimals and return a float (not Decimal)."""
+    return f"round(({expr})::numeric, 2)::float8"
+
+
+def cid(phone: str) -> str:
+    """Opaque customer id used in URLs (phone numbers never appear in links or logs)."""
+    return hashlib.sha256((config.SECRET_KEY + phone).encode()).hexdigest()[:16]
+
+
+def phone_for_cid(c: str) -> str | None:
+    def build():
+        phones = db.cursor().execute("SELECT DISTINCT phone FROM sales WHERE phone IS NOT NULL")
+        return {cid(p): p for (p,) in phones.fetchall()}
+    return db.cached("cid_map", build).get(c)
 
 
 @dataclass
@@ -25,7 +64,11 @@ class Filters:
     types: list[str] = field(default_factory=list)
     districts: list[str] = field(default_factory=list)
     seasons: list[str] = field(default_factory=list)
-    allowed_branches: list[str] | None = None  # set from the user's account
+    allowed_branches: list[str] | None = None  # from the user's account
+
+    def key(self):
+        return (self.date_from, self.date_to, tuple(self.branches), tuple(self.types),
+                tuple(self.districts), tuple(self.seasons), tuple(self.allowed_branches or ()))
 
     def where(self, alias: str = "") -> tuple[str, list]:
         p = f"{alias}." if alias else ""
@@ -46,9 +89,13 @@ class Filters:
         for col, values in (("branch", branches), ("invoice_type", self.types),
                             ("district", self.districts), ("season", self.seasons)):
             if values:
-                parts.append(f"{p}{col} IN (SELECT unnest(?::VARCHAR[]))")
-                params.append(values)
+                parts.append(f"{p}{col} = ANY(?)")
+                params.append(list(values))
         return " AND ".join(parts), params
+
+    def scope_only(self) -> "Filters":
+        """Same branch restriction, no date/other filters (for 'first ever visit' logic)."""
+        return Filters(allowed_branches=self.allowed_branches)
 
 
 def reference_date(cur, f: Filters) -> date | None:
@@ -58,20 +105,68 @@ def reference_date(cur, f: Filters) -> date | None:
 
 
 # ====================================================================== customers
+CUSTOMER_COLUMNS = [
+    "phone", "name", "branch", "district", "total_spent", "visits", "quantity", "first_visit",
+    "last_visit", "visit_days", "branches_count", "top_sales_type", "top_material",
+    "top_category", "top_season", "phone_valid", "avg_per_visit", "avg_days_between",
+    "days_since", "status", "high_value", "loyal", "r_score", "f_score", "m_score", "segment",
+    "expected_next", "overdue_days", "churn_risk",
+]
+
 CUSTOMER_SORTS = {
     "priority": "status_rank ASC, total_spent DESC",
     "total_spent": "total_spent", "visits": "visits", "last_visit": "last_visit",
     "first_visit": "first_visit", "days_since": "days_since", "name": "name",
     "phone": "phone", "branch": "branch", "avg_per_visit": "avg_per_visit",
-    "avg_days_between": "avg_days_between",
+    "avg_days_between": "avg_days_between", "overdue_days": "overdue_days",
+    "expected_next": "expected_next", "segment": "segment",
 }
+
+SEGMENTS = ["champions", "loyal", "potential", "new", "promising", "cant_lose", "at_risk",
+            "hibernating", "lost"]
 
 
 def customers_cte(f: Filters, settings: dict, ref: date | None) -> tuple[str, list]:
     w, params = f.where()
     sql = f"""
+    base AS (
+      SELECT phone,
+        (array_agg(name ORDER BY invoice_date DESC) FILTER (WHERE name IS NOT NULL))[1] AS name,
+        mode() WITHIN GROUP (ORDER BY branch) AS branch,
+        mode() WITHIN GROUP (ORDER BY district) AS district,
+        {R("sum(item_price)")} AS total_spent,
+        count(DISTINCT visit_key) AS visits,
+        sum(quantity) AS quantity,
+        min(day) AS first_visit,
+        max(day) AS last_visit,
+        count(DISTINCT day) AS visit_days,
+        count(DISTINCT branch) AS branches_count,
+        mode() WITHIN GROUP (ORDER BY invoice_type) AS top_sales_type,
+        mode() WITHIN GROUP (ORDER BY material_group) AS top_material,
+        mode() WITHIN GROUP (ORDER BY item_category) AS top_category,
+        mode() WITHIN GROUP (ORDER BY season) AS top_season,
+        bool_or(phone_valid) AS phone_valid
+      FROM sales WHERE phone IS NOT NULL AND {w}
+      GROUP BY phone
+    ),
+    calc AS (
+      SELECT base.*,
+        {R("total_spent / nullif(visits, 0)")} AS avg_per_visit,
+        CASE WHEN visit_days > 1
+             THEN round(((last_visit - first_visit)::numeric / (visit_days - 1)), 1)::float8
+        END AS avg_days_between,
+        (?::date - last_visit) AS days_since
+      FROM base
+    ),
+    scored AS (
+      SELECT calc.*,
+        ntile(5) OVER (ORDER BY days_since DESC NULLS FIRST, total_spent) AS r_score,
+        ntile(5) OVER (ORDER BY visits, total_spent) AS f_score,
+        ntile(5) OVER (ORDER BY total_spent, visits) AS m_score
+      FROM calc
+    ),
     cust AS (
-      SELECT *,
+      SELECT scored.*,
         CASE WHEN days_since IS NULL THEN 'unknown'
              WHEN days_since <= ? THEN 'active'
              WHEN days_since <= ? THEN 'attention'
@@ -79,98 +174,120 @@ def customers_cte(f: Filters, settings: dict, ref: date | None) -> tuple[str, li
         CASE WHEN days_since IS NULL THEN 3 WHEN days_since <= ? THEN 2
              WHEN days_since <= ? THEN 1 ELSE 0 END AS status_rank,
         total_spent >= ? AS high_value,
-        (total_spent >= ? OR visits >= ?) AS loyal
-      FROM (
-        SELECT phone,
-          arg_max(name, invoice_date) FILTER (WHERE name IS NOT NULL) AS name,
-          mode(branch) AS branch,
-          mode(district) AS district,
-          round(sum(item_price), 2) AS total_spent,
-          count(DISTINCT visit_key) AS visits,
-          sum(quantity) AS quantity,
-          min(day)::DATE AS first_visit,
-          max(day)::DATE AS last_visit,
-          count(DISTINCT day) AS visit_days,
-          mode(invoice_type) AS top_sales_type,
-          mode(material_group) AS top_material,
-          mode(item_category) AS top_category,
-          mode(season) AS top_season,
-          bool_or(phone_valid) AS phone_valid
-        FROM sales WHERE phone IS NOT NULL AND {w}
-        GROUP BY phone
-      ) base
-      CROSS JOIN LATERAL (SELECT
-        round(total_spent / nullif(visits, 0), 2) AS avg_per_visit,
-        CASE WHEN visit_days > 1
-             THEN round(date_diff('day', first_visit, last_visit) / (visit_days - 1), 1) END
-             AS avg_days_between,
-        date_diff('day', last_visit, ?::DATE) AS days_since)
+        (total_spent >= ? OR visits >= ?) AS loyal,
+        CASE
+          WHEN r_score >= 4 AND f_score >= 4 THEN 'champions'
+          WHEN r_score >= 3 AND f_score >= 3 THEN 'loyal'
+          WHEN r_score >= 4 AND f_score <= 1 THEN 'new'
+          WHEN r_score >= 4 THEN 'potential'
+          WHEN r_score = 3 THEN 'promising'
+          WHEN f_score >= 4 AND m_score >= 4 THEN 'cant_lose'
+          WHEN f_score >= 3 THEN 'at_risk'
+          WHEN r_score = 2 THEN 'hibernating'
+          ELSE 'lost' END AS segment,
+        CASE WHEN avg_days_between IS NOT NULL
+             THEN last_visit + round(avg_days_between)::int END AS expected_next,
+        CASE WHEN avg_days_between IS NOT NULL
+             THEN round(days_since - avg_days_between)::int END AS overdue_days,
+        CASE WHEN avg_days_between IS NULL THEN
+               CASE WHEN days_since > ? THEN 'high' WHEN days_since > ? THEN 'medium' ELSE 'low' END
+             WHEN days_since > 2 * greatest(avg_days_between, 7) THEN 'high'
+             WHEN days_since > 1.5 * greatest(avg_days_between, 7) THEN 'medium'
+             ELSE 'low' END AS churn_risk
+      FROM scored
     )"""
     s = settings
-    head = [s["active_days"], s["attention_days"], s["active_days"], s["attention_days"],
-            s["high_value_spend"], s["loyalty_spend"], s["loyalty_visits"]]
-    return sql, head + params + [ref]
+    tail = [s["active_days"], s["attention_days"], s["active_days"], s["attention_days"],
+            s["high_value_spend"], s["loyalty_spend"], s["loyalty_visits"],
+            s["attention_days"], s["active_days"]]
+    return sql, params + [ref] + tail
 
 
-def list_customers(f: Filters, settings: dict, *, q=None, status=None, flag=None,
-                   sort="priority", desc=True, page=1, page_size=50, limit_all=False) -> dict:
-    cur = db.cursor()
-    ref = reference_date(cur, f)
-    cte, params = customers_cte(f, settings, ref)
-    conds, cparams = ["TRUE"], []
+def _customer_where(q=None, status=None, flag=None, segment=None, churn=None, ref=None):
+    conds, params = ["TRUE"], []
     if q:
         conds.append("(phone ILIKE ? OR name ILIKE ?)")
-        cparams += [f"%{q}%", f"%{q}%"]
+        params += [f"%{q}%", f"%{q}%"]
     if status:
-        conds.append("status IN (SELECT unnest(?::VARCHAR[]))")
-        cparams.append(status if isinstance(status, list) else [status])
+        conds.append("status = ANY(?)")
+        params.append(list(status))
+    if segment:
+        conds.append("segment = ANY(?)")
+        params.append(list(segment))
+    if churn:
+        conds.append("churn_risk = ANY(?)")
+        params.append(list(churn))
     if flag == "high_value":
         conds.append("high_value")
     elif flag == "loyal":
         conds.append("loyal")
     elif flag == "invalid_phone":
         conds.append("NOT phone_valid")
+    elif flag == "multi_branch":
+        conds.append("branches_count > 1")
+    elif flag == "due_soon" and ref:
+        conds.append("expected_next BETWEEN ?::date AND ?::date + 7")
+        params += [ref, ref]
+    elif flag == "overdue":
+        conds.append("overdue_days > 0")
+    return " AND ".join(conds), params
+
+
+def list_customers(f: Filters, settings: dict, *, q=None, status=None, flag=None, segment=None,
+                   churn=None, sort="priority", desc=True, page=1, page_size=50,
+                   limit_all=False) -> dict:
+    cur = db.cursor()
+    ref = reference_date(cur, f)
+    cte, params = customers_cte(f, settings, ref)
+    where, wp = _customer_where(q, status, flag, segment, churn, ref)
 
     order = CUSTOMER_SORTS.get(sort, CUSTOMER_SORTS["priority"])
     if sort != "priority":
         order = f"{order} {'DESC' if desc else 'ASC'} NULLS LAST, phone"
-    where = " AND ".join(conds)
-
-    total = cur.execute(f"WITH {cte} SELECT count(*) FROM cust WHERE {where}",
-                        params + cparams).fetchone()[0]
-    sql = f"WITH {cte} SELECT * EXCLUDE (status_rank, visit_days) FROM cust WHERE {where} " \
-          f"ORDER BY {order}"
-    if not limit_all:
-        sql += f" LIMIT {int(page_size)} OFFSET {int((page - 1) * page_size)}"
-    return {"rows": db.rows(cur, sql, params + cparams), "total": total, "reference_date": ref}
+    sql = (f"WITH {cte} SELECT {', '.join(CUSTOMER_COLUMNS)}, count(*) OVER () AS _total "
+           f"FROM cust WHERE {where} ORDER BY {order}")
+    sql += " LIMIT 1048000" if limit_all else \
+        f" LIMIT {int(page_size)} OFFSET {int((page - 1) * page_size)}"
+    rows = db.rows(cur, sql, params + wp)
+    total = rows[0]["_total"] if rows else 0
+    if not rows and page > 1:
+        total = cur.execute(f"WITH {cte} SELECT count(*) FROM cust WHERE {where}",
+                            params + wp).fetchone()[0]
+    for r in rows:
+        r.pop("_total", None)
+        r["cid"] = cid(r["phone"])
+    return {"rows": rows, "total": total, "reference_date": ref}
 
 
 def customer_profile(phone: str, f: Filters, settings: dict) -> dict | None:
     cur = db.cursor()
     ref = reference_date(cur, f)
+    # profile = this customer over the selected period (scores relative to all customers)
     cte, params = customers_cte(f, settings, ref)
-    summary = db.one(cur, f"WITH {cte} SELECT * EXCLUDE (status_rank) FROM cust WHERE phone = ?",
-                     params + [phone])
+    summary = db.one(cur, f"WITH {cte} SELECT {', '.join(CUSTOMER_COLUMNS)} FROM cust "
+                          f"WHERE phone = ?", params + [phone])
     if not summary:
         return None
+    summary["cid"] = cid(phone)
     w, wp = f.where()
     base = f"FROM sales WHERE phone = ? AND {w}"
     bp = [phone] + wp
     return {
         "summary": summary,
         "reference_date": ref,
-        "monthly": db.rows(cur, f"""SELECT strftime(date_trunc('month', day), '%Y-%m') AS month,
-            round(sum(item_price), 2) AS sales, count(DISTINCT visit_key) AS visits
+        "monthly": db.rows(cur, f"""SELECT to_char(date_trunc('month', day), 'YYYY-MM') AS month,
+            {R("sum(item_price)")} AS sales, count(DISTINCT visit_key) AS visits
             {base} GROUP BY 1 ORDER BY 1""", bp),
         "top_items": db.rows(cur, f"""SELECT coalesce(item_name, item_code, '-') AS item,
-            sum(quantity) AS quantity, round(sum(item_price), 2) AS sales,
+            sum(quantity) AS quantity, {R("sum(item_price)")} AS sales,
             count(DISTINCT visit_key) AS times
             {base} GROUP BY 1 ORDER BY sales DESC LIMIT 15""", bp),
-        "branches": db.rows(cur, f"""SELECT branch, round(sum(item_price), 2) AS sales,
-            count(DISTINCT visit_key) AS visits {base} GROUP BY 1 ORDER BY sales DESC""", bp),
-        "visits": db.rows(cur, f"""SELECT visit_key, min(invoice_date) AS date, any_value(branch) AS branch,
-            any_value(invoice_type) AS sales_type, count(*) AS lines,
-            round(sum(item_price), 2) AS total,
+        "branches": db.rows(cur, f"""SELECT coalesce(branch, '-') AS branch,
+            {R("sum(item_price)")} AS sales, count(DISTINCT visit_key) AS visits
+            {base} GROUP BY 1 ORDER BY sales DESC""", bp),
+        "visits": db.rows(cur, f"""SELECT visit_key, min(invoice_date) AS date,
+            min(branch) AS branch, min(invoice_type) AS sales_type, count(*) AS lines,
+            {R("sum(item_price)")} AS total,
             string_agg(DISTINCT coalesce(item_name, item_code), ' · ') AS items
             {base} GROUP BY visit_key ORDER BY date DESC LIMIT 200""", bp),
     }
@@ -181,7 +298,7 @@ def _kpis(cur, f: Filters) -> dict:
     w, p = f.where()
     r = db.one(cur, f"""SELECT count(DISTINCT phone) AS customers,
         count(DISTINCT visit_key) AS invoices,
-        round(coalesce(sum(item_price), 0), 2) AS total_sales,
+        {R("coalesce(sum(item_price), 0)")} AS total_sales,
         sum(quantity) AS quantity, count(*) AS lines
         FROM sales WHERE {w}""", p)
     r["avg_per_customer"] = round(r["total_sales"] / r["customers"], 2) if r["customers"] else 0
@@ -189,88 +306,289 @@ def _kpis(cur, f: Filters) -> dict:
     return r
 
 
+def previous_filters(cur, f: Filters) -> Filters:
+    """Same length period right before the selected one (default: last 30 days)."""
+    end = f.date_to or reference_date(cur, f)
+    start = f.date_from or (end - timedelta(days=29) if end else None)
+    if not start or not end:
+        return f
+    span = (end - start).days + 1
+    return replace(f, date_from=start - timedelta(days=span), date_to=start - timedelta(days=1))
+
+
 def summary(f: Filters, settings: dict) -> dict:
     cur = db.cursor()
     w, p = f.where()
-    kpis = _kpis(cur, f)
+    ref = reference_date(cur, f)
+    tasks = {"kpis": lambda: _kpis(db.cursor(), f)}
 
-    previous = None
     if f.date_from and f.date_to:
-        span = (f.date_to - f.date_from).days + 1
-        prev_f = replace(f, date_from=f.date_from - timedelta(days=span),
-                         date_to=f.date_from - timedelta(days=1))
-        previous = _kpis(cur, prev_f)
-        previous["date_from"], previous["date_to"] = prev_f.date_from, prev_f.date_to
+        prev_f = previous_filters(cur, f)
 
-    new_customers = None
+        def prev():
+            r = _kpis(db.cursor(), prev_f)
+            r["date_from"], r["date_to"] = prev_f.date_from, prev_f.date_to
+            return r
+        tasks["previous"] = prev
+
     if f.date_from:
-        # first purchase ever (within the user's allowed branches) falls inside the range
-        aw, ap = Filters(allowed_branches=f.allowed_branches).where()
-        new_customers = cur.execute(f"""
+        aw, ap = f.scope_only().where()
+        tasks["new_customers"] = lambda: db.cursor().execute(f"""
             SELECT count(*) FROM (SELECT phone FROM sales WHERE phone IS NOT NULL AND {aw}
               GROUP BY phone HAVING min(day) >= ?) n
             WHERE phone IN (SELECT DISTINCT phone FROM sales WHERE {w})""",
             ap + [f.date_from] + p).fetchone()[0]
 
     def top(col):
-        r = cur.execute(f"""SELECT {col}, sum(item_price) s FROM sales
+        return lambda: (db.cursor().execute(f"""SELECT {col}, sum(item_price) s FROM sales
             WHERE {w} AND {col} IS NOT NULL GROUP BY 1 ORDER BY s DESC LIMIT 1""", p).fetchone()
-        return r[0] if r else None
+            or [None])[0]
 
-    insights = {k: top(c) for k, c in [
-        ("top_branch", "branch"), ("top_season", "season"), ("top_sales_type", "invoice_type"),
-        ("top_material", "material_group"), ("top_category", "item_category"),
-        ("top_district", "district"), ("top_item", "item_name")]}
+    top_keys = [("top_branch", "branch"), ("top_season", "season"),
+                ("top_sales_type", "invoice_type"), ("top_material", "material_group"),
+                ("top_category", "item_category"), ("top_district", "district"),
+                ("top_item", "item_name")]
+    for k, c in top_keys:
+        tasks[k] = top(c)
 
-    ref = reference_date(cur, f)
     cte, cp = customers_cte(f, settings, ref)
-    seg = db.one(cur, f"""WITH {cte} SELECT
+    tasks["segments"] = q_one(f"""WITH {cte} SELECT
         count(*) FILTER (WHERE status='active') AS active,
         count(*) FILTER (WHERE status='attention') AS attention,
         count(*) FILTER (WHERE status='inactive') AS inactive,
         count(*) FILTER (WHERE high_value) AS high_value,
         count(*) FILTER (WHERE loyal) AS loyal,
         count(*) FILTER (WHERE NOT phone_valid) AS invalid_phone FROM cust""", cp)
-
-    monthly = db.rows(cur, f"""SELECT strftime(date_trunc('month', day), '%Y-%m') AS month,
-        round(sum(item_price), 2) AS sales, count(DISTINCT phone) AS customers,
+    tasks["monthly"] = q_rows(f"""SELECT to_char(date_trunc('month', day), 'YYYY-MM') AS month,
+        {R("sum(item_price)")} AS sales, count(DISTINCT phone) AS customers,
         count(DISTINCT visit_key) AS invoices FROM sales WHERE {w} GROUP BY 1 ORDER BY 1""", p)
-    by_branch = db.rows(cur, f"""SELECT coalesce(branch, '-') AS branch,
-        round(sum(item_price), 2) AS sales, count(DISTINCT phone) AS customers,
+    tasks["by_branch"] = q_rows(f"""SELECT coalesce(branch, '-') AS branch,
+        {R("sum(item_price)")} AS sales, count(DISTINCT phone) AS customers,
         count(DISTINCT visit_key) AS invoices,
-        round(sum(item_price) / nullif(count(DISTINCT phone), 0), 2) AS avg_per_customer
+        {R("sum(item_price) / nullif(count(DISTINCT phone), 0)")} AS avg_per_customer
         FROM sales WHERE {w} GROUP BY 1 ORDER BY sales DESC""", p)
-    by_type = db.rows(cur, f"""SELECT coalesce(invoice_type, '-') AS sales_type,
-        round(sum(item_price), 2) AS sales, count(DISTINCT visit_key) AS invoices
+    tasks["by_type"] = q_rows(f"""SELECT coalesce(invoice_type, '-') AS sales_type,
+        {R("sum(item_price)")} AS sales, count(DISTINCT visit_key) AS invoices
         FROM sales WHERE {w} GROUP BY 1 ORDER BY sales DESC""", p)
-    by_season = db.rows(cur, f"""SELECT season, round(sum(item_price), 2) AS sales,
+    tasks["by_season"] = q_rows(f"""SELECT season, {R("sum(item_price)")} AS sales,
         count(DISTINCT visit_key) AS invoices FROM sales WHERE {w} AND season IS NOT NULL
         GROUP BY 1""", p)
-    by_season.sort(key=lambda r: SEASON_ORDER.index(r["season"]) if r["season"] in SEASON_ORDER else 9)
-    top_items = db.rows(cur, f"""SELECT coalesce(item_name, item_code) AS item,
-        round(sum(item_price), 2) AS sales, sum(quantity) AS quantity,
+    tasks["top_items"] = q_rows(f"""SELECT coalesce(item_name, item_code) AS item,
+        {R("sum(item_price)")} AS sales, sum(quantity) AS quantity,
         count(DISTINCT phone) AS customers FROM sales
         WHERE {w} AND coalesce(item_name, item_code) IS NOT NULL
         GROUP BY 1 ORDER BY sales DESC LIMIT 15""", p)
 
-    return {"kpis": kpis, "previous": previous, "new_customers": new_customers,
-            "insights": insights, "segments": seg, "monthly": monthly, "by_branch": by_branch,
-            "by_type": by_type, "by_season": by_season, "top_items": top_items,
-            "reference_date": ref}
+    r = parallel(tasks)
+    r["by_season"].sort(
+        key=lambda x: SEASON_ORDER.index(x["season"]) if x["season"] in SEASON_ORDER else 9)
+    return {"kpis": r["kpis"], "previous": r.get("previous"),
+            "new_customers": r.get("new_customers"),
+            "insights": {k: r[k] for k, _ in top_keys}, "segments": r["segments"],
+            "monthly": r["monthly"], "by_branch": r["by_branch"], "by_type": r["by_type"],
+            "by_season": r["by_season"], "top_items": r["top_items"], "reference_date": ref}
+
+
+# ====================================================================== smart insights
+def _customer_health(f: Filters, settings: dict, ref) -> dict:
+    """RFM / churn / due / pareto from ONE materialised customer table."""
+    cur = db.cursor()
+    cte, cp = customers_cte(f, settings, ref)
+    cur.execute("DROP TABLE IF EXISTS pg_temp.cust_tmp")
+    cur.execute(f"CREATE TEMP TABLE cust_tmp AS WITH {cte} SELECT * FROM cust", cp)
+    try:
+        rfm = db.rows(cur, f"""SELECT segment, count(*) AS customers,
+            {R("sum(total_spent)")} AS sales,
+            {R("100 * sum(total_spent) / nullif(sum(sum(total_spent)) OVER (), 0)")} AS share,
+            {R("avg(total_spent)")} AS avg_spend, round(avg(visits), 1)::float8 AS avg_visits,
+            round(avg(days_since))::int AS avg_days_since
+            FROM cust_tmp GROUP BY segment""")
+        rfm.sort(key=lambda r: SEGMENTS.index(r["segment"]) if r["segment"] in SEGMENTS else 99)
+        churn = db.rows(cur, f"""SELECT churn_risk, count(*) AS customers,
+            {R("sum(total_spent)")} AS sales, {R("sum(avg_per_visit)")} AS value_per_visit
+            FROM cust_tmp GROUP BY churn_risk""")
+        due = db.one(cur, """SELECT
+            count(*) FILTER (WHERE expected_next BETWEEN ?::date AND ?::date + 7) AS due_soon,
+            count(*) FILTER (WHERE overdue_days > 0) AS overdue,
+            count(*) FILTER (WHERE branches_count > 1) AS multi_branch,
+            count(*) AS customers FROM cust_tmp""", [ref, ref])
+        pareto = db.one(cur, f"""WITH t AS (
+              SELECT total_spent, ntile(5) OVER (ORDER BY total_spent DESC) AS q FROM cust_tmp)
+            SELECT {R("100 * sum(total_spent) FILTER (WHERE q = 1) / nullif(sum(total_spent), 0)")}
+                   AS top20_share,
+                   {R("100 * sum(total_spent) FILTER (WHERE q = 5) / nullif(sum(total_spent), 0)")}
+                   AS bottom20_share FROM t""")
+    finally:
+        cur.execute("DROP TABLE IF EXISTS pg_temp.cust_tmp")
+    return {"rfm": rfm, "churn": churn, "due": due, "pareto": pareto}
+
+
+def insights(f: Filters, settings: dict) -> dict:
+    cur = db.cursor()
+    w, p = f.where()
+    ref = reference_date(cur, f)
+    sw, sp = f.scope_only().where()
+    prev = previous_filters(cur, f)
+    cur_f = f if (f.date_from and f.date_to) else replace(
+        f, date_from=prev.date_to + timedelta(days=1) if prev.date_to else None, date_to=ref)
+    cw, cwp = cur_f.where()
+    pw, pwp = prev.where()
+
+    tasks = {
+        "health": lambda: _customer_health(f, settings, ref),
+        # cohort retention: month of first purchase (in the selected scope) vs later months
+        "cohorts_raw": q_rows(f"""
+            WITH m AS (SELECT DISTINCT phone, date_trunc('month', day)::date AS month
+                       FROM sales WHERE phone IS NOT NULL AND {w}),
+                 first AS (SELECT phone, min(month) AS cohort FROM m GROUP BY phone),
+                 c AS (SELECT f.cohort, ((extract(year FROM m.month) - extract(year FROM f.cohort)) * 12
+                              + extract(month FROM m.month) - extract(month FROM f.cohort))::int AS k,
+                              count(*) AS n
+                       FROM m JOIN first f USING (phone) GROUP BY 1, 2)
+            SELECT to_char(cohort, 'YYYY-MM') AS cohort, k, n FROM c
+            WHERE cohort >= (SELECT max(cohort) FROM first) - interval '11 months' AND k <= 11
+            ORDER BY cohort, k""", p),
+        # products bought together (market basket)
+        "basket": q_rows(f"""
+            WITH v AS (SELECT DISTINCT visit_key, coalesce(item_name, item_code) AS item
+                       FROM sales WHERE {w} AND coalesce(item_name, item_code) IS NOT NULL),
+                 small AS (SELECT visit_key FROM v GROUP BY visit_key
+                           HAVING count(*) BETWEEN 2 AND 40),
+                 cnt AS (SELECT item, count(*) AS c FROM v GROUP BY item),
+                 top AS (SELECT item FROM cnt ORDER BY c DESC LIMIT 300),
+                 vt AS (SELECT v.* FROM v JOIN small USING (visit_key) JOIN top USING (item)),
+                 tot AS (SELECT count(DISTINCT visit_key)::float8 AS n FROM v),
+                 pr AS (SELECT a.item AS item_a, b.item AS item_b, count(*) AS together
+                        FROM vt a JOIN vt b ON a.visit_key = b.visit_key AND a.item < b.item
+                        GROUP BY 1, 2 HAVING count(*) >= 3)
+            SELECT item_a, item_b, together,
+                   {R("100.0 * together / ca.c")} AS confidence_a_b,
+                   {R("100.0 * together / cb.c")} AS confidence_b_a,
+                   {R("together * tot.n / (ca.c * cb.c)")} AS lift
+            FROM pr JOIN cnt ca ON ca.item = pr.item_a JOIN cnt cb ON cb.item = pr.item_b, tot
+            ORDER BY (together * tot.n / (ca.c * cb.c)) * ln(together + 1) DESC LIMIT 25""", p),
+        # when do customers come? (day of week x hour)
+        "heatmap": q_rows(f"""SELECT extract(isodow FROM invoice_date)::int AS dow,
+            extract(hour FROM invoice_date)::int AS hour, count(DISTINCT visit_key) AS visits,
+            {R("sum(item_price)")} AS sales
+            FROM sales WHERE {w} GROUP BY 1, 2""", p),
+        # new vs returning customers per month
+        "new_vs_returning": q_rows(f"""
+            WITH first AS (SELECT phone, date_trunc('month', min(day)) AS fm FROM sales
+                           WHERE phone IS NOT NULL AND {sw} GROUP BY phone),
+                 m AS (SELECT DISTINCT phone, date_trunc('month', day) AS month FROM sales
+                       WHERE phone IS NOT NULL AND {w})
+            SELECT to_char(m.month, 'YYYY-MM') AS month,
+                   count(*) FILTER (WHERE first.fm = m.month) AS new,
+                   count(*) FILTER (WHERE first.fm < m.month) AS returning
+            FROM m JOIN first USING (phone) GROUP BY 1 ORDER BY 1""", sp + p),
+        # branch growth vs the previous period
+        "branch_growth": q_rows(f"""
+            WITH c AS (SELECT coalesce(branch, '-') AS branch, sum(item_price) AS s,
+                              count(DISTINCT phone) AS cu FROM sales WHERE {cw} GROUP BY 1),
+                 pv AS (SELECT coalesce(branch, '-') AS branch, sum(item_price) AS s,
+                               count(DISTINCT phone) AS cu FROM sales WHERE {pw} GROUP BY 1)
+            SELECT coalesce(c.branch, pv.branch) AS branch,
+                   {R("coalesce(c.s, 0)")} AS sales, {R("coalesce(pv.s, 0)")} AS prev_sales,
+                   coalesce(c.cu, 0) AS customers, coalesce(pv.cu, 0) AS prev_customers,
+                   {R("100 * (coalesce(c.s, 0) - pv.s) / nullif(pv.s, 0)")} AS sales_change,
+                   {R("100 * (coalesce(c.cu, 0) - pv.cu)::numeric / nullif(pv.cu, 0)")}
+                     AS customers_change
+            FROM c FULL JOIN pv ON c.branch = pv.branch
+            ORDER BY sales DESC""", cwp + pwp),
+    }
+    r = parallel(tasks)
+
+    cohorts: dict[str, dict] = {}
+    for row in r["cohorts_raw"]:
+        c = cohorts.setdefault(row["cohort"], {"cohort": row["cohort"], "size": 0,
+                                               "retention": []})
+        if row["k"] == 0:
+            c["size"] = row["n"]
+        c["retention"].append({"k": row["k"], "n": row["n"]})
+    for c in cohorts.values():
+        c["retention"] = [{"k": x["k"],
+                           "pct": round(100 * x["n"] / c["size"], 1) if c["size"] else 0}
+                          for x in c["retention"]]
+
+    res = {"reference_date": ref, **r["health"], "cohorts": list(cohorts.values()),
+           "basket": r["basket"], "heatmap": r["heatmap"],
+           "has_time": any(h["hour"] != 0 for h in r["heatmap"]),
+           "new_vs_returning": r["new_vs_returning"], "branch_growth": r["branch_growth"],
+           "periods": {"current": [cur_f.date_from, cur_f.date_to],
+                       "previous": [prev.date_from, prev.date_to]}}
+    res["alerts"] = alerts(res, settings)
+    return res
+
+
+def alerts(ins: dict, settings: dict) -> list[dict]:
+    """Rule-based 'smart alerts' in English and Arabic."""
+    out = []
+
+    def add(level, en, ar):
+        out.append({"level": level, "en": en, "ar": ar})
+
+    for g in ins["branch_growth"]:
+        ch = g["sales_change"]
+        if ch is not None and ch <= -15:
+            add("danger", f"Sales in {g['branch']} dropped {abs(ch):.0f}% vs the previous period.",
+                f"مبيعات فرع {g['branch']} انخفضت {abs(ch):.0f}% مقارنة بالفترة السابقة.")
+        elif ch is not None and ch >= 20:
+            add("success", f"Sales in {g['branch']} grew {ch:.0f}% vs the previous period.",
+                f"مبيعات فرع {g['branch']} زادت {ch:.0f}% مقارنة بالفترة السابقة.")
+        cc = g["customers_change"]
+        if cc is not None and cc <= -15:
+            add("warning", f"{g['branch']} lost {abs(cc):.0f}% of its active customers.",
+                f"فرع {g['branch']} فقد {abs(cc):.0f}% من عملائه النشطين.")
+
+    seg = {r["segment"]: r for r in ins["rfm"]}
+    for key, en, ar in [
+        ("cant_lose", "high-spending customers stopped coming (Can't lose them) - call them first.",
+         "عميل من كبار العملاء توقفوا عن الشراء - اتصل بهم أولاً."),
+        ("at_risk", "frequent customers are at risk of leaving - send them an offer.",
+         "عميل دائم معرضون للفقد - أرسل لهم عرضاً."),
+    ]:
+        r = seg.get(key)
+        if r and r["customers"]:
+            add("warning", f"{r['customers']} {en} ({r['sales']:,.0f} EGP lifetime).",
+                f"{r['customers']} {ar} ({r['sales']:,.0f} جنيه).")
+
+    churn = {r["churn_risk"]: r for r in ins["churn"]}
+    hi = churn.get("high")
+    if hi and hi["customers"]:
+        add("danger", f"{hi['customers']} customers are well past their usual visit rhythm "
+                      f"(high churn risk).",
+            f"{hi['customers']} عميل تأخروا كثيراً عن موعد زيارتهم المعتاد (خطر فقد مرتفع).")
+    due = ins["due"]
+    if due and due["due_soon"]:
+        add("info", f"{due['due_soon']} customers are expected to visit in the next 7 days - "
+                    f"a reminder message can lock it in.",
+            f"{due['due_soon']} عميل متوقع زيارتهم خلال 7 أيام - رسالة تذكير تضمن الزيارة.")
+    pareto = ins["pareto"]
+    if pareto and pareto["top20_share"]:
+        add("info", f"Top 20% of customers bring {pareto['top20_share']:.0f}% of sales.",
+            f"أفضل 20% من العملاء يحققون {pareto['top20_share']:.0f}% من المبيعات.")
+    if ins["basket"]:
+        b = ins["basket"][0]
+        add("info", f"'{b['item_a']}' and '{b['item_b']}' are often bought together "
+                    f"(lift {b['lift']:.1f}) - consider a bundle.",
+            f"'{b['item_a']}' و '{b['item_b']}' يُشتريان معاً كثيراً (معامل {b['lift']:.1f}) - "
+            f"فكّر في عرض مجمّع.")
+    return out
 
 
 # ====================================================================== area
 def area(f: Filters, min_customers: int = 5) -> dict:
     cur = db.cursor()
     w, p = f.where()
-    districts = db.rows(cur, f"""SELECT district, round(sum(item_price), 2) AS sales,
+    districts = db.rows(cur, f"""SELECT district, {R("sum(item_price)")} AS sales,
         count(DISTINCT phone) AS customers, count(DISTINCT visit_key) AS invoices,
-        round(sum(item_price) / nullif(count(DISTINCT phone), 0), 2) AS spend_per_customer,
-        round(100 * sum(item_price) / nullif(sum(sum(item_price)) OVER (), 0), 2) AS share
+        {R("sum(item_price) / nullif(count(DISTINCT phone), 0)")} AS spend_per_customer,
+        {R("100 * sum(item_price) / nullif(sum(sum(item_price)) OVER (), 0)")} AS share
         FROM sales WHERE {w} GROUP BY 1 ORDER BY sales DESC""", p)
     branch_district = db.rows(cur, f"""SELECT coalesce(branch, '-') AS branch, district,
-        round(sum(item_price), 2) AS sales, count(DISTINCT phone) AS customers,
-        round(sum(item_price) / nullif(count(DISTINCT phone), 0), 2) AS spend_per_customer,
+        {R("sum(item_price)")} AS sales, count(DISTINCT phone) AS customers,
+        {R("sum(item_price) / nullif(count(DISTINCT phone), 0)")} AS spend_per_customer,
         row_number() OVER (PARTITION BY branch ORDER BY sum(item_price) DESC) AS rank
         FROM sales WHERE {w} GROUP BY branch, district ORDER BY branch, rank""", p)
     weak = sorted(
@@ -296,15 +614,16 @@ def list_sales(f: Filters, *, q=None, sort="invoice_date", desc=True, page=1, pa
         w += " AND (phone ILIKE ? OR name ILIKE ? OR item_name ILIKE ? OR invoice_no ILIKE ?)"
         p = p + [f"%{q}%"] * 4
     sort = sort if sort in SALES_SORTS else "invoice_date"
-    agg = db.one(cur, f"SELECT count(*) AS total, round(coalesce(sum(item_price),0),2) AS sales "
+    agg = db.one(cur, f"SELECT count(*) AS total, {R('coalesce(sum(item_price), 0)')} AS sales "
                       f"FROM sales WHERE {w}", p)
     sql = (f"SELECT {', '.join(SALES_COLUMNS)} FROM sales WHERE {w} "
            f"ORDER BY {sort} {'DESC' if desc else 'ASC'} NULLS LAST")
-    if not limit_all:
-        sql += f" LIMIT {int(page_size)} OFFSET {int((page - 1) * page_size)}"
-    else:
-        sql += " LIMIT 1000000"
-    return {"rows": db.rows(cur, sql, p), "total": agg["total"], "sales": agg["sales"]}
+    sql += " LIMIT 1048000" if limit_all else \
+        f" LIMIT {int(page_size)} OFFSET {int((page - 1) * page_size)}"
+    rows = db.rows(cur, sql, p)
+    for r in rows:
+        r["cid"] = cid(r["phone"]) if r["phone"] else None
+    return {"rows": rows, "total": agg["total"], "sales": agg["sales"]}
 
 
 # ====================================================================== meta
@@ -317,8 +636,7 @@ def meta(allowed_branches: list[str] | None) -> dict:
             f"SELECT DISTINCT {col} FROM sales WHERE {w} AND {col} IS NOT NULL ORDER BY 1", p
         ).fetchall()]
 
-    rng = cur.execute(f"SELECT min(day)::DATE, max(day)::DATE, count(*) FROM sales WHERE {w}",
-                      p).fetchone()
+    rng = cur.execute(f"SELECT min(day), max(day), count(*) FROM sales WHERE {w}", p).fetchone()
     return {"branches": distinct("branch"), "types": distinct("invoice_type"),
             "districts": distinct("district"), "seasons": SEASON_ORDER,
             "date_min": rng[0], "date_max": rng[1], "rows": rng[2]}

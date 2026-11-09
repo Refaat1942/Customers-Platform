@@ -45,3 +45,16 @@ def test_district():
     assert extract_district("12 Street, Maadi district, Cairo") == "Maadi"
     assert extract_district("Building 5, Zamalek") == "Zamalek"
     assert extract_district(None) == "Unknown"
+
+
+def test_date_parsing():
+    from datetime import datetime
+
+    import pandas as pd
+
+    from app.core.importer import _parse_dates
+    s = pd.Series([datetime(2026, 10, 12, 14), "2026-10-12", "12/10/2026", 46307, None, "bad"],
+                  dtype=object)
+    out = _parse_dates(s).dt.strftime("%Y-%m-%d").tolist()
+    assert out[:4] == ["2026-10-12"] * 4
+    assert pd.isna(out[4]) and pd.isna(out[5])

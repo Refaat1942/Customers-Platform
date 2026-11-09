@@ -5,14 +5,18 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import config, db
-from .api.routes import router
+from .api.routes import cleanup_stale_uploads, router
 from .auth import ensure_admin_exists
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    db.connect()
+    db.init()
     ensure_admin_exists()
+    cleanup_stale_uploads()
+    # imports interrupted by a restart can never finish
+    db.cursor().execute("UPDATE imports SET status='failed', message='Interrupted by a server "
+                        "restart, please import the file again' WHERE status='running'")
     yield
     db.close()
 
