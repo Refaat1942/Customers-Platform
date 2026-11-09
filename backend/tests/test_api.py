@@ -321,3 +321,26 @@ def test_merge_mode_skips_duplicates_and_deletes_nothing(client):
     after = client.get("/api/sales", params={"page_size": 1}).json()["total"]
     assert after >= before  # nothing deleted; already-loaded lines skipped
     assert st["rows_skipped"] > 0
+
+
+def test_two_files_imported_together(client):
+    from .sample_data import make_rows
+    ups = []
+    for seed in (31, 32):
+        buf = io.BytesIO()
+        make_rows(n_customers=4, seed=seed).to_excel(buf, index=False)
+        ups.append(upload(client, buf.getvalue(), f"file{seed}.xlsx"))
+    ids = []
+    for up in ups:
+        s = up["sheets_info"][0]
+        r = client.post("/api/imports/commit", json={"upload_id": up["upload_id"], "jobs": [
+            {"sheet": s["sheet"], "kind": s["kind"], "mapping": s["mapping"], "mode": "merge"}]})
+        assert r.status_code == 200, r.text
+        ids += r.json()["import_ids"]
+    for _ in range(300):
+        st = [client.get(f"/api/imports/{i}").json() for i in ids]
+        if all(x["status"] != "running" for x in st):
+            break
+        time.sleep(0.1)
+    assert [x["status"] for x in st] == ["done", "done"], st
+    assert all(x["rows_imported"] > 0 for x in st)

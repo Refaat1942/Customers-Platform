@@ -3,6 +3,7 @@
 import hashlib
 import json
 import shutil
+import threading
 import zipfile
 from datetime import date, datetime
 from pathlib import Path
@@ -320,14 +321,20 @@ def preview(path: Path, sheet: str | None = None) -> dict:
     }
 
 
+_import_lock = threading.Lock()
+
+
 def run_jobs(jobs: list[dict], path: Path):
-    """Run several sheet imports from the same file one after another, then delete the file."""
+    """Run several sheet imports from the same file one after another, then delete the file.
+    Imports of different files wait for each other (one import at a time = no collisions)."""
     try:
+        _import_lock.acquire()
         # customer lists first, so the sales imported next get names/districts from them
         for j in sorted(jobs, key=lambda j: 0 if j["kind"] == "customers" else 1):
             fn = run_customer_import if j["kind"] == "customers" else run_import
             fn(j["import_id"], path, j["mapping"], j["mode"], j["sheet"], cleanup=False)
     finally:
+        _import_lock.release()
         path.unlink(missing_ok=True)
 
 
