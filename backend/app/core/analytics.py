@@ -568,8 +568,9 @@ def alerts(ins: dict, settings: dict) -> list[dict]:
     if pareto and pareto["top20_share"]:
         add("info", f"Top 20% of customers bring {pareto['top20_share']:.0f}% of sales.",
             f"أفضل 20% من العملاء يحققون {pareto['top20_share']:.0f}% من المبيعات.")
-    if ins["basket"]:
-        b = ins["basket"][0]
+    strong = [b for b in ins["basket"] if (b["lift"] or 0) >= 1.2]
+    if strong:
+        b = strong[0]
         add("info", f"'{b['item_a']}' and '{b['item_b']}' are often bought together "
                     f"(lift {b['lift']:.1f}) - consider a bundle.",
             f"'{b['item_a']}' و '{b['item_b']}' يُشتريان معاً كثيراً (معامل {b['lift']:.1f}) - "
