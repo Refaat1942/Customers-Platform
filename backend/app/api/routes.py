@@ -918,3 +918,59 @@ def get_audit(user: dict = Depends(require("audit")), username: str | None = Non
     df = pd.DataFrame(rows, columns=["id", "ts", "username", "action", "details", "ip"])
     return xlsx_response(ex.workbook([("Audit", df)], lang), "audit_log.xlsx")
 
+
+
+# ====================================================================== POS API keys
+class ApiKeyIn(BaseModel):
+    name: str = Field(min_length=2, max_length=80)
+    branch: str | None = Field(default=None, max_length=150)
+
+
+@router.get("/integration/keys")
+def list_api_keys(user: dict = Depends(require("settings"))):
+    return db.rows(db.cursor(), "SELECT id, name, branch, prefix, active, created_by, created_at, "
+                                "last_used_at, requests FROM api_keys ORDER BY id DESC")
+
+
+@router.post("/integration/keys")
+def create_api_key(body: ApiKeyIn, user: dict = Depends(require("settings"))):
+    from .pos import hash_key, new_key
+    key = new_key()
+    db.cursor().execute(
+        "INSERT INTO api_keys (name, branch, prefix, key_hash, created_by) VALUES (?, ?, ?, ?, ?)",
+        [body.name.strip(), (body.branch or "").strip() or None, key[:10], hash_key(key),
+         user["username"]])
+    audit(user, "api_key_create", f"{body.name} branch={body.branch or '-'} {key[:10]}…")
+    return {"key": key, "note": "Copy it now - it is shown only once."}
+
+
+@router.delete("/integration/keys/{kid}")
+def revoke_api_key(kid: int, user: dict = Depends(require("settings"))):
+    cur = db.cursor()
+    row = db.one(cur, "SELECT name, prefix FROM api_keys WHERE id = ?", [kid])
+    cur.execute("UPDATE api_keys SET active = FALSE WHERE id = ?", [kid])
+    audit(user, "api_key_revoke", f"{row['name']} {row['prefix']}…" if row else str(kid))
+    return {"ok": True}
+
+
+@router.get("/integration/activity")
+def pos_activity(user: dict = Depends(require("settings"))):
+    """Live feed summary: what each branch sent through the POS API."""
+    cur = db.cursor()
+    return {
+        "branches": db.rows(cur, """SELECT branch, count(DISTINCT ext_key) AS invoices,
+            max(invoice_date) AS last_invoice, {} AS sales FROM sales WHERE source = 'pos'
+            GROUP BY branch ORDER BY branch""".format(an.R("sum(item_price)"))),
+        "customers": db.one(cur, """SELECT count(*) AS total,
+            count(*) FILTER (WHERE registered_at >= now() - interval '1 day') AS last_24h,
+            max(updated_at) AS last_update FROM customer_directory WHERE source = 'pos'"""),
+    }
+
+
+# ====================================================================== live POS
+@router.get("/live")
+def get_live(branch: str | None = None, user: dict = Depends(require("dashboard"))):
+    res = an.live(user["branches"] or None, branch)
+    protect(res["feed"], user)
+    protect(res["new_customers"], user)
+    return res

@@ -7,7 +7,7 @@ import { api } from "../lib/api";
 import { fmtDate, fmtInt, fmtMoney, fmtPct } from "../lib/format";
 import DataTable from "../components/DataTable";
 import { Badge, Card, Empty, ErrorBox, ExportButton, Kpi, MultiSelect, PageHeader, Spinner } from "../components/ui";
-import { RankBars, ShareBar } from "../components/charts";
+import { RankBars, ShareBar, TrendChart } from "../components/charts";
 
 export default function CustomerBase() {
   const { t } = useTranslation();
@@ -47,6 +47,20 @@ export default function CustomerBase() {
             <Kpi label={t("base.bought")} value={fmtInt(k.bought)} sub={pct(k.bought)} />
             <Kpi label={t("base.never")} value={fmtInt(k.never_bought)} sub={pct(k.never_bought)} />
           </div>
+          {(sum.data.registrations?.length > 0 || sum.data.by_registered_branch?.length > 0) && (
+            <div className="grid lg:grid-cols-2 gap-5">
+              {sum.data.registrations?.length > 0 && (
+                <Card title={t("base.registrations")}>
+                  <TrendChart data={sum.data.registrations} x="month" y="customers" name={t("col.customers")} money={false} height={220} />
+                </Card>
+              )}
+              {sum.data.by_registered_branch?.length > 0 && (
+                <Card title={t("base.byRegBranch")}>
+                  <RankBars data={sum.data.by_registered_branch} label="label" value="customers" name={t("col.customers")} money={false} />
+                </Card>
+              )}
+            </div>
+          )}
           <Card title={t("base.quality")}>
             <ShareBar parts={[
               { label: t("base.valid"), value: k.valid_phones, color: "#1a7f37" },

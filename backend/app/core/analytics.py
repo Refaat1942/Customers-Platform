@@ -685,7 +685,14 @@ def directory_summary(allowed_branches=None) -> dict:
             {R("100.0 * count(*) / nullif(sum(count(*)) OVER (), 0)")} AS share
             FROM d GROUP BY 1 ORDER BY customers DESC LIMIT {limit}""", sp)
 
-    return {"kpis": k, "by_region": by("region"), "by_city": by("city"), "by_district": by("district"),
+    registrations = db.rows(cur, f"""{base} SELECT to_char(date_trunc('month', registered_at), 'YYYY-MM') AS month,
+        count(*) AS customers FROM d WHERE registered_at IS NOT NULL GROUP BY 1 ORDER BY 1""", sp)
+    reg_branch = db.rows(cur, f"""{base} SELECT coalesce(registered_branch, '—') AS label,
+        count(*) AS customers,
+        count(*) FILTER (WHERE registered_at >= now() - interval '30 days') AS last_30_days
+        FROM d WHERE source = 'pos' GROUP BY 1 ORDER BY customers DESC""", sp)
+    return {"kpis": k, "registrations": registrations[-24:], "by_registered_branch": reg_branch,
+            "by_region": by("region"), "by_city": by("city"), "by_district": by("district"),
             "by_area": by("area"), "by_gender": by("gender", 10),
             "sales_rows": cur.execute("SELECT count(*) FROM sales").fetchone()[0]}
 
@@ -798,3 +805,124 @@ def meta(allowed_branches: list[str] | None) -> dict:
             "branches": distinct("branch"), "types": distinct("invoice_type"),
             "districts": distinct("district"), "seasons": SEASON_ORDER,
             "date_min": rng[0], "date_max": rng[1], "rows": rng[2]}
+
+
+# ====================================================================== live POS monitor
+def live(allowed_branches=None, branch: str | None = None) -> dict:
+    """Today's POS activity (Cairo time): totals, per branch status, hourly curve, live feed."""
+    from datetime import datetime as _dt
+    from zoneinfo import ZoneInfo
+    now = _dt.now(ZoneInfo("Africa/Cairo")).replace(tzinfo=None)
+    today = now.date()
+    yday = today - timedelta(days=1)
+    cur = db.cursor()
+
+    conds, p = ["source = 'pos'"], []
+    if allowed_branches:
+        conds.append("branch = ANY(?)")
+        p.append(list(allowed_branches))
+    if branch:
+        conds.append("branch = ?")
+        p.append(branch)
+    w = " AND ".join(conds)
+
+    def kpis(day, until=None):
+        extra, ep = ("AND invoice_date <= ?", [until]) if until else ("", [])
+        return db.one(cur, f"""SELECT {R("coalesce(sum(item_price), 0)")} AS sales,
+            count(DISTINCT ext_key) AS invoices, count(DISTINCT phone) AS customers,
+            count(*) AS lines, max(invoice_date) AS last_invoice
+            FROM sales WHERE {w} AND day = ? {extra}""", p + [day] + ep)
+
+    k = kpis(today)
+    k["avg_invoice"] = round(k["sales"] / k["invoices"], 2) if k["invoices"] else 0
+    same_time_yday = kpis(yday, now - timedelta(days=1))
+
+    rw, rp = "source = 'pos'", []
+    if branch:
+        rw += " AND registered_branch = ?"
+        rp.append(branch)
+    k["new_customers"] = cur.execute(
+        f"SELECT count(*) FROM customer_directory WHERE {rw} AND registered_at >= ? AND registered_at < ?",
+        rp + [today, today + timedelta(days=1)]).fetchone()[0]
+
+    hourly = db.rows(cur, f"""SELECT extract(hour FROM invoice_date)::int AS hour,
+        {R("sum(item_price) FILTER (WHERE day = ?)")} AS today,
+        {R("sum(item_price) FILTER (WHERE day = ?)")} AS yesterday,
+        count(DISTINCT ext_key) FILTER (WHERE day = ?) AS invoices
+        FROM sales WHERE {w} AND day IN (?, ?) GROUP BY 1 ORDER BY 1""",
+        [today, yday, today] + p + [today, yday])
+    by_hour = {h["hour"]: h for h in hourly}
+    hours = [{"hour": f"{h:02d}:00", "today": (by_hour.get(h) or {}).get("today") or 0,
+              "yesterday": (by_hour.get(h) or {}).get("yesterday") or 0,
+              "invoices": (by_hour.get(h) or {}).get("invoices") or 0}
+             for h in range(0, 24) if h <= now.hour or (by_hour.get(h) or {}).get("yesterday")]
+
+    bw, bp = "TRUE", []
+    if allowed_branches:
+        bw, bp = "branch = ANY(?)", [list(allowed_branches)]
+    branches = db.rows(cur, f"""
+        WITH t AS (SELECT branch, {R("sum(item_price)")} AS sales, count(DISTINCT ext_key) AS invoices,
+                          count(DISTINCT phone) AS customers, max(invoice_date) AS last_invoice
+                   FROM sales WHERE source = 'pos' AND day = ? AND {bw} GROUP BY branch),
+             y AS (SELECT branch, {R("sum(item_price)")} AS sales FROM sales
+                   WHERE source = 'pos' AND day = ? AND invoice_date <= ? AND {bw} GROUP BY branch),
+             ever AS (SELECT branch, max(invoice_date) AS last_ever FROM sales
+                      WHERE source = 'pos' AND {bw} GROUP BY branch),
+             k AS (SELECT branch, max(last_used_at) AS last_seen FROM api_keys
+                   WHERE active AND branch IS NOT NULL GROUP BY branch)
+        SELECT b.branch, coalesce(t.sales, 0) AS sales, coalesce(t.invoices, 0) AS invoices,
+               coalesce(t.customers, 0) AS customers, t.last_invoice, ever.last_ever, k.last_seen,
+               coalesce(y.sales, 0) AS yesterday_sales
+        FROM (SELECT branch FROM ever UNION SELECT branch FROM k) b
+        LEFT JOIN t USING (branch) LEFT JOIN y USING (branch) LEFT JOIN ever USING (branch)
+        LEFT JOIN k USING (branch)
+        WHERE {"b.branch = ANY(?)" if allowed_branches else "TRUE"}
+        ORDER BY sales DESC, b.branch""",
+        [today] + bp + [yday, now - timedelta(days=1)] + bp + bp
+        + ([list(allowed_branches)] if allowed_branches else []))
+    from datetime import datetime as _d2
+    for b in branches:
+        # last_seen (UTC, from the API key) is converted to Cairo time for display
+        seen = b["last_seen"]
+        if seen:
+            seen = seen.replace(tzinfo=ZoneInfo("UTC")).astimezone(ZoneInfo("Africa/Cairo")).replace(tzinfo=None)
+            b["last_seen"] = seen
+        last = max([x for x in (seen, b["last_invoice"], b["last_ever"]) if x], default=None)
+        mins = (now - last).total_seconds() / 60 if isinstance(last, _d2) else None
+        b["minutes_since"] = round(mins) if mins is not None else None
+        b["state"] = "online" if mins is not None and mins <= 15 else \
+            "idle" if mins is not None and mins <= 120 else "offline"
+    spark = db.rows(cur, f"""SELECT branch, extract(hour FROM invoice_date)::int AS hour,
+        {R("sum(item_price)")} AS sales FROM sales WHERE source = 'pos' AND day = ? AND {bw}
+        GROUP BY 1, 2""", [today] + bp)
+    for b in branches:
+        pts = {x["hour"]: x["sales"] for x in spark if x["branch"] == b["branch"]}
+        b["hourly"] = [pts.get(h, 0) for h in range(0, now.hour + 1)]
+
+    feed = db.rows(cur, f"""SELECT ext_key, min(invoice_no) AS invoice_no, min(branch) AS branch,
+        min(invoice_date) AS time, min(phone) AS phone, min(name) AS name, count(*) AS lines,
+        {R("sum(item_price)")} AS total, min(invoice_type) AS sales_type,
+        min(extra->>'cashier') AS cashier, min(extra->>'payment_method') AS payment,
+        string_agg(DISTINCT coalesce(item_name, item_code), ' · ') AS items
+        FROM sales WHERE {w} AND day >= ?
+        GROUP BY ext_key ORDER BY time DESC LIMIT 40""", p + [yday])
+    for f in feed:
+        f["cid"] = cid(f["phone"]) if f["phone"] else None
+
+    nw, np_ = "source = 'pos' AND registered_at IS NOT NULL", []
+    if branch:
+        nw += " AND registered_branch = ?"
+        np_.append(branch)
+    newc = db.rows(cur, f"""SELECT phone, name, registered_branch AS branch, registered_at AS time,
+        city, district FROM customer_directory WHERE {nw}
+        ORDER BY registered_at DESC LIMIT 15""", np_)
+
+    top_items = db.rows(cur, f"""SELECT coalesce(item_name, item_code) AS item,
+        {R("sum(item_price)")} AS sales, sum(quantity) AS quantity FROM sales
+        WHERE {w} AND day = ? GROUP BY 1 ORDER BY sales DESC LIMIT 8""", p + [today])
+
+    return {"now": now, "today": today, "kpis": k, "same_time_yesterday": same_time_yday,
+            "hourly": hours, "branches": branches, "feed": feed, "new_customers": newc,
+            "top_items": top_items,
+            "has_pos": bool(cur.execute("SELECT 1 FROM sales WHERE source = 'pos' LIMIT 1").fetchone()
+                            or cur.execute("SELECT 1 FROM api_keys LIMIT 1").fetchone())}

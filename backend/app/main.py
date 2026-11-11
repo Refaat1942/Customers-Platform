@@ -5,6 +5,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import config, db
+from .api.pos import router as pos_router
 from .api.routes import cleanup_stale_uploads, router
 from .auth import ensure_admin_exists
 
@@ -24,6 +25,23 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Customers Platform", lifespan=lifespan, docs_url="/api/docs",
               openapi_url="/api/openapi.json")
 app.include_router(router)
+app.include_router(pos_router)
+
+
+@app.middleware("http")
+async def gunzip_requests(request, call_next):
+    """POS backfills may send gzip-compressed JSON (Content-Encoding: gzip) - 5-10x smaller."""
+    if request.headers.get("content-encoding", "").lower() == "gzip" and \
+            request.url.path.startswith("/api/v1/pos/"):
+        import gzip
+        body = gzip.decompress(await request.body())
+        if len(body) > 200 * 1024 * 1024:
+            return JSONResponse({"detail": "Request too large"}, status_code=413)
+        request._body = body
+        request.scope["headers"] = [(k, v) for k, v in request.scope["headers"]
+                                    if k not in (b"content-encoding", b"content-length")] + \
+            [(b"content-length", str(len(body)).encode())]
+    return await call_next(request)
 
 
 @app.get("/api/health")

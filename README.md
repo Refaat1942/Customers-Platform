@@ -17,7 +17,11 @@ The original desktop code is kept in `legacy/` for reference.
 
 ## What's inside
 
-**Pages:** Dashboard · Smart insights · Customers (+ customer profile) · Call lists · Business analysis ·
+**POS integration (API):** each branch's POS pushes new customers and invoices (with every line, time,
+cashier, payment) to `/api/v1/pos`, live and for the full history. Guide for the POS developer:
+[`docs/POS_API.md`](docs/POS_API.md). Keys are created in Settings → POS integration.
+
+**Pages:** Live POS · Customer base · Products · Dashboard · Smart insights · Customers (+ customer profile) · Call lists · Business analysis ·
 Areas · Transactions · AI analyst · Data upload · Users & roles · Settings · Audit log · My account.
 
 **On every page:** date range (presets like "last 30 days", "last month", "this year", or custom dates),

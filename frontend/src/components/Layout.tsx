@@ -3,7 +3,7 @@ import { Link, NavLink, Outlet, useLocation } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import clsx from "clsx";
 import {
-  BarChart3, BookUser, Bot, Package, Briefcase, FileClock, Globe, LayoutDashboard, LogOut, MapPin, Menu, PhoneCall,
+  Activity, BarChart3, BookUser, Bot, Package, Briefcase, FileClock, Globe, LayoutDashboard, LogOut, MapPin, Menu, PhoneCall,
   Receipt, Settings, Sparkles, Upload, UserCog, UserRound, Users, X,
 } from "lucide-react";
 import { useAuth } from "../lib/auth";
@@ -15,6 +15,7 @@ type Item = { to: string; key: string; perm: string; icon: typeof Users };
 
 const ANALYSIS: Item[] = [
   { to: "/", key: "dashboard", perm: "dashboard", icon: LayoutDashboard },
+  { to: "/live", key: "live", perm: "dashboard", icon: Activity },
   { to: "/insights", key: "insights", perm: "insights", icon: Sparkles },
   { to: "/customers", key: "customers", perm: "customers", icon: Users },
   { to: "/customer-base", key: "base", perm: "customers", icon: BookUser },

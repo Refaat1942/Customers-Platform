@@ -1,11 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { ImageUp, Trash2 } from "lucide-react";
+import { Copy, ImageUp, KeyRound, Trash2 } from "lucide-react";
 import { api } from "../lib/api";
 import { useBranding } from "../lib/branding";
 import { Logo } from "../components/Layout";
-import { Card, Notice, PageHeader, Spinner } from "../components/ui";
+import { Badge, Card, Notice, PageHeader, Spinner } from "../components/ui";
+import DataTable from "../components/DataTable";
+import { fmtDate, fmtInt, fmtMoney } from "../lib/format";
 
 type S = { active_days: number; attention_days: number; high_value_spend: number; loyalty_spend: number; loyalty_visits: number; openai_model: string; openai_key_set: boolean; openai_key_hint: string };
 
@@ -67,6 +69,7 @@ export default function Settings() {
         </Card>
 
         <BrandingCard />
+        <PosCard />
       </div>
     </>
   );
@@ -111,6 +114,74 @@ function BrandingCard() {
         </div>
         {msg && <Notice kind={msg.kind}>{msg.text}</Notice>}
       </div>
+    </Card>
+  );
+}
+
+function PosCard() {
+  const { t } = useTranslation();
+  const qc = useQueryClient();
+  const keys = useQuery({ queryKey: ["api_keys"], queryFn: () => api.get<any[]>("/integration/keys") });
+  const act = useQuery({ queryKey: ["pos_activity"], queryFn: () => api.get("/integration/activity"), refetchInterval: 30_000 });
+  const [name, setName] = useState("");
+  const [branch, setBranch] = useState("");
+  const [created, setCreated] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const create = async () => {
+    setErr(null); setCopied(false);
+    try {
+      const r = await api.post("/integration/keys", { name, branch: branch || null });
+      setCreated(r.key); setName(""); setBranch("");
+      qc.invalidateQueries({ queryKey: ["api_keys"] });
+    } catch (e) { setErr((e as Error).message); }
+  };
+  const revoke = async (id: number) => {
+    if (!confirm(t("pos.revokeConfirm"))) return;
+    await api.del(`/integration/keys/${id}`);
+    qc.invalidateQueries({ queryKey: ["api_keys"] });
+  };
+  return (
+    <Card title={t("pos.title")} help={t("pos.help")} className="xl:col-span-2">
+      <div className="text-sm mb-4">{t("pos.endpoint")}: <code className="bg-surface px-2 py-0.5 rounded">{window.location.origin}/api/v1/pos</code></div>
+      <div className="flex flex-wrap gap-3 items-end">
+        <div className="flex-1 min-w-48"><label className="label">{t("pos.name")}</label><input className="input" value={name} onChange={(e) => setName(e.target.value)} /></div>
+        <div className="flex-1 min-w-48"><label className="label">{t("pos.branch")}</label><input className="input" value={branch} onChange={(e) => setBranch(e.target.value)} /></div>
+        <button className="btn-primary" disabled={name.trim().length < 2} onClick={create}><KeyRound size={16} /> {t("pos.create")}</button>
+      </div>
+      {err && <div className="mt-3"><Notice kind="danger">{err}</Notice></div>}
+      {created && (
+        <div className="mt-4"><Notice kind="warning">
+          <div className="mb-2">{t("pos.shown")}</div>
+          <div className="flex gap-2 items-center">
+            <code className="bg-white border border-line rounded px-2 py-1 text-xs break-all flex-1">{created}</code>
+            <button className="btn-ghost" onClick={() => { navigator.clipboard?.writeText(created); setCopied(true); }}><Copy size={14} /> {copied ? t("pos.copied") : t("ai.copy")}</button>
+          </div>
+        </Notice></div>
+      )}
+      <div className="mt-4">
+        <DataTable rows={keys.data ?? []} columns={[
+          { key: "name", label: t("pos.name").split(" (")[0], render: (r) => <b>{r.name}</b> },
+          { key: "branch", label: t("col.branch") },
+          { key: "prefix", label: "Key", className: "font-mono text-xs", render: (r) => `${r.prefix}…` },
+          { key: "active", label: t("col.status"), render: (r) => r.active ? <Badge kind="active">{t("pos.active")}</Badge> : <Badge kind="inactive">{t("pos.revoked")}</Badge> },
+          { key: "last_used_at", label: t("pos.lastUsed"), render: (r) => fmtDate(r.last_used_at, true) },
+          { key: "requests", label: t("pos.requests"), num: true, render: (r) => fmtInt(r.requests) },
+          { key: "x", label: "", render: (r) => r.active && <button className="text-bad hover:underline text-sm cursor-pointer" onClick={() => revoke(r.id)}>{t("pos.revoke")}</button> },
+        ]} />
+      </div>
+      {act.data && (act.data.branches.length > 0 || act.data.customers?.total > 0) && (
+        <div className="mt-5">
+          <div className="font-semibold text-sm mb-2">{t("pos.activity")}</div>
+          <div className="text-sm text-muted mb-2">{t("pos.customers")}: <b className="text-ink">{fmtInt(act.data.customers?.total)}</b> · {t("pos.last24")}: <b className="text-ink">{fmtInt(act.data.customers?.last_24h)}</b></div>
+          <DataTable rows={act.data.branches} columns={[
+            { key: "branch", label: t("col.branch") },
+            { key: "invoices", label: t("pos.invoices"), num: true, render: (r) => fmtInt(r.invoices) },
+            { key: "sales", label: t("col.sales"), num: true, render: (r) => fmtMoney(r.sales) },
+            { key: "last_invoice", label: t("pos.lastInvoice"), render: (r) => fmtDate(r.last_invoice, true) },
+          ]} />
+        </div>
+      )}
     </Card>
   );
 }

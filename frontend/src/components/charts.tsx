@@ -124,3 +124,42 @@ export function seqColor(v: number) {
   return SEQ[i];
 }
 export const seqText = (v: number) => (v > 0.55 ? "#fff" : "#1f2420");
+
+/** Today vs yesterday on one money axis (same measure, so one axis is correct). */
+export function TodayVsYesterday({ data, todayLabel, yesterdayLabel, height = 260 }: { data: any[]; todayLabel: string; yesterdayLabel: string; height?: number }) {
+  const { i18n } = useTranslation();
+  const rtl = i18n.language === "ar";
+  return (
+    <div dir="ltr"><ResponsiveContainer width="100%" height={height}>
+      <AreaChart data={data} margin={{ top: 8, right: 8, left: 8, bottom: 0 }}>
+        <defs>
+          <linearGradient id="liveFill" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor={BRAND} stopOpacity={0.25} />
+            <stop offset="100%" stopColor={BRAND} stopOpacity={0.02} />
+          </linearGradient>
+        </defs>
+        <CartesianGrid stroke={GRID} vertical={false} />
+        <XAxis dataKey="hour" tick={AXIS} tickLine={false} axisLine={{ stroke: GRID }} reversed={rtl} minTickGap={10} />
+        <YAxis tick={AXIS} tickLine={false} axisLine={false} tickFormatter={fmtCompact} width={48} orientation={rtl ? "right" : "left"} />
+        <Tooltip content={<TooltipBox />} cursor={{ stroke: "#9aa19a", strokeDasharray: 3 }} />
+        <Legend iconType="plainline" wrapperStyle={{ fontSize: 12 }} />
+        <Area type="monotone" dataKey="yesterday" name={yesterdayLabel} stroke="#9aa19a" strokeDasharray="4 4" strokeWidth={2} fill="none" dot={false} />
+        <Area type="monotone" dataKey="today" name={todayLabel} stroke={BRAND} strokeWidth={2.5} fill="url(#liveFill)" activeDot={{ r: 4, strokeWidth: 2, stroke: "#fff" }} />
+      </AreaChart>
+    </ResponsiveContainer></div>
+  );
+}
+
+/** Tiny inline trend for a card (no axes; the card states the number). */
+export function Sparkline({ values, width = 120, height = 32 }: { values: number[]; width?: number; height?: number }) {
+  if (!values.length) return <svg width={width} height={height} />;
+  const max = Math.max(...values, 1);
+  const step = values.length > 1 ? width / (values.length - 1) : width;
+  const pts = values.map((v, i) => `${(i * step).toFixed(1)},${(height - 2 - (v / max) * (height - 4)).toFixed(1)}`).join(" ");
+  return (
+    <svg width={width} height={height} className="overflow-visible">
+      <polyline points={`0,${height} ${pts} ${width},${height}`} fill="var(--brand, #1b5e20)" fillOpacity={0.08} stroke="none" />
+      <polyline points={pts} fill="none" stroke="var(--brand, #1b5e20)" strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" />
+    </svg>
+  );
+}

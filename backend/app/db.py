@@ -8,6 +8,7 @@
 import json
 import re
 import threading
+import time
 from collections import OrderedDict
 
 import psycopg
@@ -120,6 +121,29 @@ CREATE TABLE IF NOT EXISTS customer_directory (
     updated_at TIMESTAMP DEFAULT now()
 );
 ALTER TABLE imports ADD COLUMN IF NOT EXISTS kind TEXT DEFAULT 'sales';
+
+-- POS integration (push API)
+ALTER TABLE sales ADD COLUMN IF NOT EXISTS source TEXT;          -- NULL = file import, 'pos' = API
+ALTER TABLE sales ADD COLUMN IF NOT EXISTS ext_key TEXT;         -- branch|invoice_no for API invoices
+ALTER TABLE sales ADD COLUMN IF NOT EXISTS extra JSONB;
+CREATE INDEX IF NOT EXISTS sales_ext_key_idx ON sales (ext_key) WHERE ext_key IS NOT NULL;
+ALTER TABLE customer_directory ADD COLUMN IF NOT EXISTS registered_at TIMESTAMP;
+ALTER TABLE customer_directory ADD COLUMN IF NOT EXISTS registered_branch TEXT;
+ALTER TABLE customer_directory ADD COLUMN IF NOT EXISTS pos_customer_id TEXT;
+ALTER TABLE customer_directory ADD COLUMN IF NOT EXISTS source TEXT;
+ALTER TABLE customer_directory ADD COLUMN IF NOT EXISTS extra JSONB;
+CREATE TABLE IF NOT EXISTS api_keys (
+    id SERIAL PRIMARY KEY,
+    name TEXT NOT NULL,
+    branch TEXT,                       -- default branch for invoices sent with this key
+    prefix TEXT NOT NULL,              -- first characters, to recognise the key
+    key_hash TEXT UNIQUE NOT NULL,     -- sha256 of the key (the key itself is never stored)
+    active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_by TEXT,
+    created_at TIMESTAMP DEFAULT now(),
+    last_used_at TIMESTAMP,
+    requests BIGINT DEFAULT 0
+);
 
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE IF NOT EXISTS saved_mappings (signature TEXT PRIMARY KEY, mapping TEXT);
@@ -257,14 +281,31 @@ CACHE_SIZE = 300
 
 
 def bump_version():
-    global _version
+    global _version, _last_bump, _pending_bump
     with _cache_lock:
         _version += 1
         _cache.clear()
+        _last_bump = time.time()
+        _pending_bump = False
+
+
+_last_bump = 0.0
+_pending_bump = False
+
+
+def bump_version_soon(seconds: int = 60):
+    """For live POS data: refresh cached reports at most once a minute (not on every sale)."""
+    global _pending_bump
+    if time.time() - _last_bump >= seconds:
+        bump_version()
+    else:
+        _pending_bump = True
 
 
 def cached(key, fn):
     """Cache analytics results until the next import / settings change."""
+    if _pending_bump and time.time() - _last_bump >= 60:
+        bump_version()
     k = (_version, key)
     with _cache_lock:
         if k in _cache:
