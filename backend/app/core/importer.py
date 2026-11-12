@@ -322,20 +322,53 @@ def preview(path: Path, sheet: str | None = None) -> dict:
 
 
 _import_lock = threading.Lock()
+_cancelled: set[int] = set()
+
+
+class Cancelled(Exception):
+    pass
+
+
+def log(msg: str):
+    print(f"[import] {datetime.now():%H:%M:%S} {msg}", flush=True)
+
+
+def cancel(import_id: int):
+    """Ask a queued or running import to stop (checked between batches)."""
+    _cancelled.add(import_id)
+
+
+def _check_cancel(import_id: int):
+    if import_id in _cancelled:
+        raise Cancelled("Cancelled by user")
 
 
 def run_jobs(jobs: list[dict], path: Path):
     """Run several sheet imports from the same file one after another, then delete the file.
     Imports of different files wait for each other (one import at a time = no collisions)."""
+    ids = [j["import_id"] for j in jobs]
+    log(f"queued {ids}")
     try:
         _import_lock.acquire()
         # customer lists first, so the sales imported next get names/districts from them
         for j in sorted(jobs, key=lambda j: 0 if j["kind"] == "customers" else 1):
+            if j["import_id"] in _cancelled:
+                db.cursor().execute("UPDATE imports SET status='failed', message='Cancelled by user', "
+                                    "finished_at=now() WHERE id=? AND status='running'", [j["import_id"]])
+                continue
             fn = run_customer_import if j["kind"] == "customers" else run_import
+            log(f"#{j['import_id']} started ({j['kind']}, sheet={j['sheet']}, mode={j['mode']})")
             fn(j["import_id"], path, j["mapping"], j["mode"], j["sheet"], cleanup=False)
+            st = db.one(db.cursor(), "SELECT status, message, rows_imported, rows_skipped FROM imports "
+                                     "WHERE id = ?", [j["import_id"]]) or {}
+            log(f"#{j['import_id']} {st.get('status')}: imported={st.get('rows_imported')} "
+                f"skipped={st.get('rows_skipped')} {st.get('message') or ''}")
     finally:
         _import_lock.release()
+        for i in ids:
+            _cancelled.discard(i)
         path.unlink(missing_ok=True)
+    warm_cache_soon()
 
 
 # ---------------------------------------------------------------- cleaning
@@ -514,6 +547,22 @@ def _copy_frame(cur, table: str, frame: pd.DataFrame):
             cp.write_row(row)
 
 
+_warming = threading.Lock()
+
+
+def warm_cache_soon():
+    """Pre-compute the dashboard in the background - never while holding up the import queue."""
+    def run():
+        if not _warming.acquire(blocking=False):
+            return
+        try:
+            if not _import_lock.locked():  # another import started: it will warm when done
+                _warm_cache()
+        finally:
+            _warming.release()
+    threading.Thread(target=run, daemon=True).start()
+
+
 def _warm_cache():
     """Pre-compute the default dashboard so the first page view after an import is instant."""
     from . import analytics as an
@@ -545,16 +594,19 @@ def run_import(import_id: int, path: Path, mapping: dict, mode: str, sheet: str 
                 if missing:
                     raise ValueError(f"Missing required columns: {', '.join(missing)}")
                 checked = True
+            _check_cancel(import_id)
             frame, st = build_frame(chunk, mapping)
             for k in stats:
                 stats[k] += st[k]
             _copy_frame(cur, stage_tbl, frame.assign(import_id=import_id)[SALES_COLS])
             pct = 5 + 85 * min(stats["rows_read"] / max(total, 1), 1)
             _progress(cur, import_id, "cleaning", pct, rows_read=stats["rows_read"])
+            log(f"#{import_id} {stats['rows_read']:,} rows read")
 
         if not checked:
             raise ValueError("The file is empty")
 
+        _check_cancel(import_id)
         _progress(cur, import_id, "saving", 92)
         enrich_sales(cur, stage_tbl)
         cur.execute(f"ANALYZE {stage_tbl}")
@@ -600,8 +652,10 @@ def run_import(import_id: int, path: Path, mapping: dict, mode: str, sheet: str 
                  stats["invalid_dates"], dmin, dmax, import_id])
         cur.execute("ANALYZE sales")
         db.bump_version()
-        _warm_cache()
     except Exception as e:  # noqa: BLE001 - reported to the user
+        if not isinstance(e, Cancelled):
+            import traceback
+            log(f"#{import_id} FAILED: {e}\n{traceback.format_exc()}")
         cur.execute(f"DROP TABLE IF EXISTS {stage_tbl}")
         cur.execute("UPDATE imports SET status='failed', message=?, finished_at=now() "
                     "WHERE id=?", [str(e)[:1000], import_id])
@@ -680,6 +734,7 @@ def run_customer_import(import_id: int, path: Path, mapping: dict, mode: str,
                 if not mapping.get("phone") or mapping["phone"] not in chunk.columns:
                     raise ValueError("Missing required column: phone")
                 checked = True
+            _check_cancel(import_id)
             frame, st = build_customer_frame(chunk, mapping)
             for k in stats:
                 stats[k] += st[k]
@@ -721,8 +776,10 @@ def run_customer_import(import_id: int, path: Path, mapping: dict, mode: str,
                  stats["invalid_phones"], import_id])
         cur.execute("ANALYZE customer_directory")
         db.bump_version()
-        _warm_cache()
     except Exception as e:  # noqa: BLE001 - reported to the user
+        if not isinstance(e, Cancelled):
+            import traceback
+            log(f"#{import_id} FAILED: {e}\n{traceback.format_exc()}")
         cur.execute(f"DROP TABLE IF EXISTS {stage_tbl}")
         cur.execute("UPDATE imports SET status='failed', message=?, finished_at=now() "
                     "WHERE id=?", [str(e)[:1000], import_id])

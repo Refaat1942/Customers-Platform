@@ -2,7 +2,7 @@ import { useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import clsx from "clsx";
-import { CheckCircle2, FileSpreadsheet, Loader2, Trash2, UploadCloud, XCircle } from "lucide-react";
+import { CheckCircle2, Clock, FileSpreadsheet, Loader2, Trash2, UploadCloud, XCircle } from "lucide-react";
 import { api, getToken } from "../lib/api";
 import { fmtBytes, fmtDate, fmtInt } from "../lib/format";
 import DataTable from "../components/DataTable";
@@ -117,6 +117,12 @@ export default function Import() {
     }
     qc.invalidateQueries({ queryKey: ["imports"] });
     if (errors.length) { setErr(errors.join(" · ")); setPhase("files"); } else reset();
+  };
+
+  const cancelImport = async (id: number) => {
+    if (!confirm(t("imp.cancelConfirm"))) return;
+    try { await api.post(`/imports/${id}/cancel`); } catch (e) { setErr((e as Error).message); }
+    qc.invalidateQueries({ queryKey: ["imports"] });
   };
 
   const undo = async (id: number) => {
@@ -255,17 +261,36 @@ export default function Import() {
         <DuplicatesCard />
 
         <Card title={t("imp.history")} help={t("imp.skippedHelp")}>
-          {running && (
-            <div className="mb-4 rounded-lg border border-line p-4">
-              <div className="flex justify-between text-sm mb-2">
-                <span className="font-semibold">#{running.id} {running.filename}</span>
-                <span className="text-muted">{t(`imp.stage.${running.stage ?? "queued"}`)} · {fmtInt(running.rows_read)} {t("app.rows")} · {Math.round(running.progress)}%</span>
+          {(() => {
+            const active = (history.data ?? []).filter((i) => i.status === "running").sort((x, y) => x.id - y.id);
+            const working = active.find((i) => i.stage && i.stage !== "queued");
+            return active.length > 0 && (
+              <div className="mb-4 space-y-2">
+                {active.map((r) => {
+                  const waiting = !r.stage || r.stage === "queued";
+                  return (
+                    <div key={r.id} className={clsx("rounded-lg border p-4", waiting ? "border-dashed border-line bg-surface/40" : "border-line")}>
+                      <div className="flex flex-wrap items-center gap-3 text-sm mb-2">
+                        {waiting ? <Clock size={15} className="text-muted" /> : <Loader2 size={15} className="animate-spin text-brand" />}
+                        <span className="font-semibold">#{r.id} {r.filename}</span>
+                        <span className="text-muted ms-auto">
+                          {waiting
+                            ? (working ? t("imp.waitingFor", { id: working.id }) : t("imp.stage.queued"))
+                            : `${t(`imp.stage.${r.stage}`)} · ${fmtInt(r.rows_read)} ${t("app.rows")} · ${Math.round(r.progress)}%`}
+                        </span>
+                        <button className="text-xs text-bad hover:underline cursor-pointer" onClick={() => cancelImport(r.id)}>{t("app.cancel")}</button>
+                      </div>
+                      {!waiting && (
+                        <div className="h-2.5 bg-surface rounded-full overflow-hidden">
+                          <div className="h-full bg-brand transition-all" style={{ width: `${r.progress}%` }} />
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
-              <div className="h-2.5 bg-surface rounded-full overflow-hidden">
-                <div className="h-full bg-brand transition-all" style={{ width: `${running.progress}%` }} />
-              </div>
-            </div>
-          )}
+            );
+          })()}
           <DataTable rows={history.data ?? []} maxHeight={520} columns={[
             { key: "id", label: "#", num: true },
             { key: "filename", label: "File", className: "max-w-56 truncate" },

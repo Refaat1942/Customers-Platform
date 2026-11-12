@@ -718,6 +718,20 @@ def get_import(imp_id: int, user: dict = Depends(require("import"))):
     return r
 
 
+@router.post("/imports/{imp_id}/cancel")
+def cancel_import(imp_id: int, user: dict = Depends(require("import"))):
+    cur = db.cursor()
+    row = db.one(cur, "SELECT status, stage FROM imports WHERE id = ?", [imp_id])
+    if not row or row["status"] != "running":
+        raise HTTPException(400, "This import is not running")
+    importer.cancel(imp_id)
+    if row["stage"] == "queued":  # not started yet: mark it right away
+        cur.execute("UPDATE imports SET status='failed', message='Cancelled by user', "
+                    "finished_at=now() WHERE id = ?", [imp_id])
+    audit(user, "import_cancel", f"#{imp_id}")
+    return {"ok": True}
+
+
 @router.delete("/imports/{imp_id}")
 def delete_import(imp_id: int, user: dict = Depends(require("import"))):
     cur = db.cursor()

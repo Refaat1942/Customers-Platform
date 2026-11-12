@@ -411,3 +411,23 @@ def test_find_and_remove_stored_duplicates(client):
     r = client.delete("/api/maintenance/duplicates").json()
     assert r["removed"] == dup["duplicate_lines"]
     assert client.get("/api/maintenance/duplicates").json()["duplicate_lines"] == 0
+
+
+def test_queued_import_can_be_cancelled(client):
+    from app.core import importer
+    importer._import_lock.acquire()  # pretend another big import is running
+    try:
+        up = upload(client, client.sample.read_bytes(), "queued.xlsx")
+        s = up["sheets_info"][0]
+        iid = client.post("/api/imports/commit", json={"upload_id": up["upload_id"], "jobs": [
+            {"sheet": s["sheet"], "kind": "sales", "mapping": s["mapping"], "mode": "merge"}]}).json()["import_id"]
+        assert client.get(f"/api/imports/{iid}").json()["stage"] == "queued"
+        assert client.post(f"/api/imports/{iid}/cancel").status_code == 200
+    finally:
+        importer._import_lock.release()
+    for _ in range(100):
+        st = client.get(f"/api/imports/{iid}").json()
+        if st["status"] != "running":
+            break
+        time.sleep(0.1)
+    assert st["status"] == "failed" and st["message"] == "Cancelled by user" and st["rows_imported"] == 0
