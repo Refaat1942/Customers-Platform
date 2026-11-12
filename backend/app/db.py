@@ -165,7 +165,8 @@ class Cursor:
         self.cur = conn.cursor(row_factory=tuple_row)
 
     def execute(self, q, params=None):
-        self.cur.execute(sql(q), params or None)
+        # psycopg only reads %-placeholders when parameters are passed
+        self.cur.execute(sql(q) if params else q, params or None)
         return self
 
     def fetchone(self):
@@ -195,15 +196,54 @@ def connection():
     return conn
 
 
+# who + day + amount: the lookup key of the duplicate check (see importer.DUP_MATCH)
+MATCH_INDEX = """CREATE INDEX CONCURRENTLY IF NOT EXISTS sales_match_idx ON sales
+    ((coalesce(phone, '~' || coalesce(branch, ''))), day, (round(item_price::numeric, 2)))"""
+
+
+def _log(msg):
+    print(f"[db] {msg}", flush=True)
+
+
 def init():
     global _schema_ready
     with _schema_lock:
         if _schema_ready:
             return
         with psycopg.connect(config.DATABASE_URL, autocommit=True) as conn:
-            conn.execute(SCHEMA)
+            # 1) queries left running by a previous app process (e.g. a killed import) would
+            #    otherwise keep the CPU busy and block the schema check below
+            n = conn.execute("""SELECT count(pg_terminate_backend(pid)) FROM pg_stat_activity
+                WHERE datname = current_database() AND pid <> pg_backend_pid()
+                  AND backend_type = 'client backend'
+                  AND coalesce(application_name, '') NOT IN ('psql', 'pg_dump')""").fetchone()[0]
+            if n:
+                _log(f"stopped {n} query(ies) left over from before the restart")
+            # 2) never hang at startup waiting for a lock
+            conn.execute("SET lock_timeout = '15s'")
+            for stmt in (x.strip() for x in re.split(r";[ \t]*(?:--[^\n]*)?\n", SCHEMA + "\n")):
+                if not stmt or all(l.strip().startswith("--") for l in stmt.splitlines() if l.strip()):
+                    continue
+                try:
+                    conn.execute(stmt)
+                except psycopg.errors.LockNotAvailable:
+                    _log(f"skipped (table busy): {stmt.splitlines()[0][:80]}")
             _seed_roles(Cursor(conn))
         _schema_ready = True
+    threading.Thread(target=_build_indexes, daemon=True).start()
+
+
+def _build_indexes():
+    """Big indexes are built in the background without blocking the app or imports."""
+    try:
+        with psycopg.connect(config.DATABASE_URL, autocommit=True) as conn:
+            bad = conn.execute("""SELECT 1 FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
+                WHERE c.relname = 'sales_match_idx' AND NOT i.indisvalid""").fetchone()
+            if bad:  # an interrupted concurrent build leaves an invalid index behind
+                conn.execute("DROP INDEX CONCURRENTLY IF EXISTS sales_match_idx")
+            conn.execute(MATCH_INDEX)
+    except Exception as e:  # noqa: BLE001 - only speeds things up
+        _log(f"index build skipped: {e}")
 
 
 def cursor() -> Cursor:

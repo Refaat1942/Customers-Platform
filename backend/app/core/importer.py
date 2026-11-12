@@ -481,20 +481,18 @@ def build_frame(raw: pd.DataFrame, mapping: dict) -> tuple[pd.DataFrame, dict]:
 # A new line `s` is a duplicate of an existing line `x` when it's the same customer (or the same
 # branch for walk-in sales), the same day and time (a date without a time matches any time that day),
 # the same amount and quantity, and the same product by code OR by name.
-_DUP_COMMON = """x.day = s.day
+# Lookup by (customer or branch, day, amount) - indexed by db.MATCH_INDEX, so even a phone with
+# thousands of lines a day is checked instantly - then the tolerant comparison on the rest.
+DUP_MATCH = """EXISTS (SELECT 1 FROM sales x
+    WHERE coalesce(x.phone, '~' || coalesce(x.branch, '')) = coalesce(s.phone, '~' || coalesce(s.branch, ''))
+      AND x.day = s.day
+      AND round(x.item_price::numeric, 2) = round(s.item_price::numeric, 2)
       AND (x.invoice_date = s.invoice_date OR x.invoice_date::time = '00:00'
            OR s.invoice_date::time = '00:00')
-      AND round(x.item_price::numeric, 2) = round(s.item_price::numeric, 2)
       AND (x.quantity IS NOT DISTINCT FROM s.quantity OR x.quantity IS NULL OR s.quantity IS NULL)
       AND (x.item_code = s.item_code OR x.item_name = s.item_name
            OR (x.item_code IS NULL AND x.item_name IS NULL
-               AND s.item_code IS NULL AND s.item_name IS NULL))"""
-# two statements (customers with a phone / walk-in sales by branch) so each can use an index
-DUP_MATCHES = [
-    f"s.phone IS NOT NULL AND EXISTS (SELECT 1 FROM sales x WHERE x.phone = s.phone AND {_DUP_COMMON})",
-    f"""s.phone IS NULL AND EXISTS (SELECT 1 FROM sales x WHERE x.phone IS NULL
-        AND x.branch IS NOT DISTINCT FROM s.branch AND {_DUP_COMMON})""",
-]
+               AND s.item_code IS NULL AND s.item_name IS NULL)))"""
 
 
 # Exact duplicates already stored by DIFFERENT imports (same file uploaded twice, overlapping
@@ -620,8 +618,7 @@ def run_import(import_id: int, path: Path, mapping: dict, mode: str, sheet: str 
                 # safest: add everything, skip lines that are already in the system.
                 # Matching is tolerant, because the same sale often comes from different reports:
                 # with/without invoice number, product code or name, with/without a time.
-                for cond in DUP_MATCHES:
-                    skipped += cur.execute(f"DELETE FROM {stage_tbl} s WHERE {cond}").cur.rowcount
+                skipped += cur.execute(f"DELETE FROM {stage_tbl} s WHERE {DUP_MATCH}").cur.rowcount
             elif mode == "append_new":
                 last = cur.execute("SELECT max(invoice_date) FROM sales").fetchone()[0]
                 if last is not None:
