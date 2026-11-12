@@ -5,6 +5,9 @@ services:
   db:
     image: postgres:16-alpine
     restart: unless-stopped
+    # Docker's default /dev/shm is only 64 MB; PostgreSQL's parallel queries on big imports
+    # need more ("could not resize shared memory segment")
+    shm_size: 1gb
     environment:
       POSTGRES_DB: customers
       POSTGRES_USER: customers

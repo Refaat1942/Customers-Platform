@@ -732,6 +732,20 @@ def delete_import(imp_id: int, user: dict = Depends(require("import"))):
     return {"deleted_rows": n}
 
 
+@router.get("/maintenance/duplicates")
+def check_duplicates(user: dict = Depends(require("import"))):
+    """Lines stored twice by different imports (e.g. overlapping reports)."""
+    return importer.find_duplicates(db.cursor())
+
+
+@router.delete("/maintenance/duplicates")
+def delete_duplicates(user: dict = Depends(require("import"))):
+    with importer._import_lock:  # never while an import is running
+        n = importer.remove_duplicates(db.connection())
+    audit(user, "duplicates_removed", f"{n} duplicate sales lines removed")
+    return {"removed": n}
+
+
 def cleanup_stale_uploads():
     """Remove half-finished uploads older than a day (called at startup)."""
     limit = datetime.now().timestamp() - 86400

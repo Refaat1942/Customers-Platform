@@ -444,6 +444,55 @@ def build_frame(raw: pd.DataFrame, mapping: dict) -> tuple[pd.DataFrame, dict]:
     return out, stats
 
 
+# ---------------------------------------------------------------- duplicates
+# A new line `s` is a duplicate of an existing line `x` when it's the same customer (or the same
+# branch for walk-in sales), the same day and time (a date without a time matches any time that day),
+# the same amount and quantity, and the same product by code OR by name.
+_DUP_COMMON = """x.day = s.day
+      AND (x.invoice_date = s.invoice_date OR x.invoice_date::time = '00:00'
+           OR s.invoice_date::time = '00:00')
+      AND round(x.item_price::numeric, 2) = round(s.item_price::numeric, 2)
+      AND (x.quantity IS NOT DISTINCT FROM s.quantity OR x.quantity IS NULL OR s.quantity IS NULL)
+      AND (x.item_code = s.item_code OR x.item_name = s.item_name
+           OR (x.item_code IS NULL AND x.item_name IS NULL
+               AND s.item_code IS NULL AND s.item_name IS NULL))"""
+# two statements (customers with a phone / walk-in sales by branch) so each can use an index
+DUP_MATCHES = [
+    f"s.phone IS NOT NULL AND EXISTS (SELECT 1 FROM sales x WHERE x.phone = s.phone AND {_DUP_COMMON})",
+    f"""s.phone IS NULL AND EXISTS (SELECT 1 FROM sales x WHERE x.phone IS NULL
+        AND x.branch IS NOT DISTINCT FROM s.branch AND {_DUP_COMMON})""",
+]
+
+
+# Exact duplicates already stored by DIFFERENT imports (same file uploaded twice, overlapping
+# reports). Rows of the first import are kept - including legitimate repeated lines inside it.
+DUP_FINGERPRINT = """coalesce(phone, '~' || coalesce(branch, '')), invoice_date,
+    round(item_price::numeric, 2), quantity, coalesce(item_code, item_name, '')"""
+
+
+def find_duplicates(cur) -> dict:
+    r = cur.execute(f"""WITH r AS (
+          SELECT import_id, dense_rank() OVER (PARTITION BY {DUP_FINGERPRINT}
+                                               ORDER BY coalesce(import_id, 0)) AS dr
+          FROM sales WHERE source IS DISTINCT FROM 'pos')
+        SELECT count(*) FILTER (WHERE dr > 1), count(DISTINCT import_id) FILTER (WHERE dr > 1)
+        FROM r""").fetchone()
+    return {"duplicate_lines": r[0], "imports_affected": r[1]}
+
+
+def remove_duplicates(conn) -> int:
+    cur = db.Cursor(conn)
+    with conn.transaction():
+        n = cur.execute(f"""WITH r AS (
+              SELECT ctid, dense_rank() OVER (PARTITION BY {DUP_FINGERPRINT}
+                                              ORDER BY coalesce(import_id, 0)) AS dr
+              FROM sales WHERE source IS DISTINCT FROM 'pos')
+            DELETE FROM sales WHERE ctid IN (SELECT ctid FROM r WHERE dr > 1)""").cur.rowcount
+    cur.execute("ANALYZE sales")
+    db.bump_version()
+    return n
+
+
 # ---------------------------------------------------------------- running
 SALES_COLS = ["import_id", "phone", "phone_valid", "name", "branch", "address", "district",
               "invoice_no", "visit_key", "invoice_date", "day", "season", "invoice_type",
@@ -516,15 +565,11 @@ def run_import(import_id: int, path: Path, mapping: dict, mode: str, sheet: str 
                 replaced = cur.execute("SELECT count(*) FROM sales").fetchone()[0]
                 cur.execute("TRUNCATE sales")
             elif mode == "merge":
-                # safest: add everything, skip lines that are already in the system
-                dup = f"""EXISTS (SELECT 1 FROM sales x WHERE x.phone IS NOT DISTINCT FROM s.phone
-                    AND x.day = s.day AND x.invoice_date = s.invoice_date
-                    AND x.visit_key = s.visit_key AND x.item_price = s.item_price
-                    AND x.item_code IS NOT DISTINCT FROM s.item_code
-                    AND x.item_name IS NOT DISTINCT FROM s.item_name
-                    AND x.quantity IS NOT DISTINCT FROM s.quantity)"""
-                skipped += cur.execute(f"SELECT count(*) FROM {stage_tbl} s WHERE {dup}").fetchone()[0]
-                cur.execute(f"DELETE FROM {stage_tbl} s WHERE {dup}")
+                # safest: add everything, skip lines that are already in the system.
+                # Matching is tolerant, because the same sale often comes from different reports:
+                # with/without invoice number, product code or name, with/without a time.
+                for cond in DUP_MATCHES:
+                    skipped += cur.execute(f"DELETE FROM {stage_tbl} s WHERE {cond}").cur.rowcount
             elif mode == "append_new":
                 last = cur.execute("SELECT max(invoice_date) FROM sales").fetchone()[0]
                 if last is not None:

@@ -367,3 +367,47 @@ def test_sales_rows_with_empty_phone(client):
     st = _commit_and_wait(client, up, "sales", "merge", up["mappings"]["sales"])
     assert st["status"] == "done", st
     assert st["rows_imported"] == 4  # rows without a phone still count in total sales
+
+
+def test_duplicates_across_different_reports(client):
+    """Same sales from two differently-shaped reports must not be counted twice."""
+    import pandas as pd
+    from datetime import datetime
+    a = pd.DataFrame({"Mobile": ["01055500001", "01055500001", "01055500002"],
+                      "Invoice No": ["X1", "X1", "X2"],
+                      "Posting Date": [datetime(2024, 5, 1, 13, 30)] * 2 + [datetime(2024, 5, 2, 9, 0)],
+                      "Material": ["A1", "B1", "A1"], "Material Description": ["Aspirin", "Bandage", "Aspirin"],
+                      "Qty": [1, 2, 1], "Net Amount": [25.0, 40.0, 25.0]})
+    # other report: no invoice number, date only, product name only, no quantity
+    b = pd.DataFrame({"Phone": ["1055500001", "1055500001", "1055500002", "01055500003"],
+                      "Date": ["01/05/2024", "01/05/2024", "02/05/2024", "03/05/2024"],
+                      "Item Name": ["Aspirin", "Bandage", "Aspirin", "Aspirin"],
+                      "Value": [25.0, 40.0, 25.0, 25.0]})
+    ids = []
+    for df, name in ((a, "report_a.xlsx"), (b, "report_b.xlsx")):
+        buf = io.BytesIO()
+        df.to_excel(buf, index=False)
+        up = upload(client, buf.getvalue(), name)
+        st = _commit_and_wait(client, up, "sales", "merge", up["mappings"]["sales"])
+        assert st["status"] == "done", st
+        ids.append(st)
+    assert ids[0]["rows_imported"] == 3
+    assert ids[1]["rows_imported"] == 1 and ids[1]["rows_skipped"] == 3  # only the new 03/05 sale
+    total = client.get("/api/sales", params={"q": "010555000"}).json()
+    assert total["total"] == 4 and total["sales"] == 115.0
+
+
+def test_find_and_remove_stored_duplicates(client):
+    _import(client, client.sample, mode="replace_period")      # baseline
+    before = client.get("/api/sales", params={"page_size": 1}).json()["total"]
+    # force the same file in again WITHOUT de-duplication (append via replace_all of nothing)
+    from app import db
+    cur = db.cursor()
+    cur.execute("INSERT INTO sales SELECT * FROM sales WHERE import_id = (SELECT max(import_id) FROM sales)")
+    cur.execute("UPDATE sales SET import_id = 99999 WHERE ctid IN (SELECT ctid FROM sales WHERE import_id = "
+                "(SELECT max(import_id) FROM sales WHERE import_id < 99999) LIMIT 50)")
+    dup = client.get("/api/maintenance/duplicates").json()
+    assert dup["duplicate_lines"] > 0
+    r = client.delete("/api/maintenance/duplicates").json()
+    assert r["removed"] == dup["duplicate_lines"]
+    assert client.get("/api/maintenance/duplicates").json()["duplicate_lines"] == 0

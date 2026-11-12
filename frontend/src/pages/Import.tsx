@@ -252,7 +252,9 @@ export default function Import() {
           </Card>
         )}
 
-        <Card title={t("imp.history")}>
+        <DuplicatesCard />
+
+        <Card title={t("imp.history")} help={t("imp.skippedHelp")}>
           {running && (
             <div className="mb-4 rounded-lg border border-line p-4">
               <div className="flex justify-between text-sm mb-2">
@@ -284,5 +286,42 @@ export default function Import() {
         </Card>
       </div>
     </>
+  );
+}
+
+function DuplicatesCard() {
+  const { t } = useTranslation();
+  const qc = useQueryClient();
+  const [busy, setBusy] = useState(false);
+  const [res, setRes] = useState<{ duplicate_lines: number; imports_affected: number } | null>(null);
+  const [msg, setMsg] = useState<{ kind: "success" | "danger"; text: string } | null>(null);
+  const check = async () => {
+    setBusy(true); setMsg(null);
+    try { setRes(await api.get("/maintenance/duplicates")); } catch (e) { setMsg({ kind: "danger", text: (e as Error).message }); }
+    setBusy(false);
+  };
+  const remove = async () => {
+    if (!confirm(t("imp.dupConfirm"))) return;
+    setBusy(true);
+    try {
+      const r = await api.del("/maintenance/duplicates");
+      setMsg({ kind: "success", text: t("imp.dupRemoved", { n: fmtInt(r.removed) }) }); setRes(null);
+      qc.invalidateQueries();
+    } catch (e) { setMsg({ kind: "danger", text: (e as Error).message }); }
+    setBusy(false);
+  };
+  return (
+    <Card title={t("imp.dupTitle")} help={t("imp.dupHelp")}>
+      <div className="flex flex-wrap items-center gap-3">
+        <button className="btn-ghost" disabled={busy} onClick={check}>{busy && <Loader2 size={16} className="animate-spin" />} {t("imp.dupCheck")}</button>
+        {res && (res.duplicate_lines === 0
+          ? <span className="text-sm text-good inline-flex items-center gap-1"><CheckCircle2 size={15} /> {t("imp.dupNone")}</span>
+          : <>
+              <span className="text-sm text-warn font-medium">{t("imp.dupFound", { n: fmtInt(res.duplicate_lines), m: res.imports_affected })}</span>
+              <button className="btn-danger" disabled={busy} onClick={remove}><Trash2 size={15} /> {t("imp.dupRemove")}</button>
+            </>)}
+      </div>
+      {msg && <div className="mt-3"><Notice kind={msg.kind}>{msg.text}</Notice></div>}
+    </Card>
   );
 }
