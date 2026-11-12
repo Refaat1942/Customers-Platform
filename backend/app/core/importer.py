@@ -309,7 +309,11 @@ def analyse_sheet(path: Path, sheet: str | None) -> dict:
     kind, reason = detect_kind(maps["sales"], maps["customers"])
     if reason == "unknown":
         kind = "skip"
+    dcol = maps["sales"].get("invoice_date")
+    order, sure = detect_date_order(df[dcol]) if dcol in df.columns else ("dmy", True)
+    has_text_dates = dcol in df.columns and df[dcol].dropna().astype(str).str.match(_SLASH_DATE).any()
     return {"sheet": sheet, "kind": kind, "kind_reason": reason, "columns": cols,
+            "date_order": order, "date_order_sure": sure, "text_dates": bool(has_text_dates),
             "warnings": sheet_warnings(df, maps["sales"]) if kind == "sales" else [],
             "mappings": maps, "mapping": maps.get(kind, maps["sales"]),
             "sample": [{c: _jsonable(v) for c, v in r.items()} for r in df.head(10).to_dict("records")]}
@@ -407,7 +411,23 @@ def _ns(v: pd.Series) -> pd.Series:
 _TIME_ONLY = r"^\s*\d{1,2}:\d{2}(:\d{2}(\.\d+)?)?\s*([AaPp]\.?[Mm]\.?|ص|م)?\s*$"
 
 
-def _parse_dates(s: pd.Series) -> pd.Series:
+_SLASH_DATE = r"^\s*(\d{1,2})[/.\-](\d{1,2})[/.\-](\d{4})"
+
+
+def detect_date_order(s: pd.Series) -> tuple[str, bool]:
+    """('dmy' | 'mdy', sure?) for text dates like 04/05/2026 (4 May or 5 April?)."""
+    txt = s.dropna().astype(str)
+    parts = txt.str.extract(_SLASH_DATE).dropna().astype(int)
+    if parts.empty:
+        return "dmy", True
+    if (parts[0] > 12).any():
+        return "dmy", True
+    if (parts[1] > 12).any():
+        return "mdy", True
+    return "dmy", False  # all values could be both: Egyptian day/month by default, ask the user
+
+
+def _parse_dates(s: pd.Series, dayfirst: bool = True) -> pd.Series:
     """Excel datetimes, Excel serial numbers, SAP yyyymmdd, ISO text and Egyptian dd/mm/yyyy text.
     A time on its own (14:35) is NOT a date - pandas would silently turn it into today."""
     if pd.api.types.is_datetime64_any_dtype(s):
@@ -438,7 +458,7 @@ def _parse_dates(s: pd.Series) -> pd.Series:
         if iso.any():
             out[txt[iso].index] = _ns(pd.to_datetime(txt[iso], errors="coerce", format="ISO8601"))
         if (~iso).any():
-            out[txt[~iso].index] = _ns(pd.to_datetime(txt[~iso], errors="coerce", dayfirst=True,
+            out[txt[~iso].index] = _ns(pd.to_datetime(txt[~iso], errors="coerce", dayfirst=dayfirst,
                                                       format="mixed"))
     return out
 
@@ -503,7 +523,8 @@ def build_frame(raw: pd.DataFrame, mapping: dict) -> tuple[pd.DataFrame, dict]:
     out["phone_valid"] = out["phone"].map(is_valid_egy_mobile)
     stats["invalid_phones"] = int((out["phone"].notna() & ~out["phone_valid"]).sum())
 
-    out["invoice_date"] = _parse_dates(src("invoice_date"))
+    out["invoice_date"] = _parse_dates(src("invoice_date"),
+                                       dayfirst=mapping.get("_date_order", "dmy") != "mdy")
     out["item_price"] = _parse_numbers(src("item_price")).fillna(0.0)
     q = src("quantity")
     out["quantity"] = _parse_numbers(q) if q is not None else np.nan

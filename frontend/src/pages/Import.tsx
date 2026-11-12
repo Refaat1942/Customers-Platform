@@ -11,6 +11,7 @@ import { Badge, Card, Notice, PageHeader } from "../components/ui";
 type Kind = "sales" | "customers" | "skip" | "empty";
 type SheetInfo = {
   sheet: string | null; rows: number | null; columns: string[]; kind: Kind; kind_reason: string; warnings?: string[];
+  date_order?: "dmy" | "mdy"; date_order_sure?: boolean; text_dates?: boolean;
   mappings: Record<"sales" | "customers", Record<string, string | null>>; sample: Record<string, any>[];
 };
 type Preview = {
@@ -111,7 +112,7 @@ export default function Import() {
       try {
         await api.post("/imports/commit", {
           upload_id: f.pv.upload_id,
-          jobs: jobs.map((x) => ({ sheet: x.sheet, kind: x.kind, mapping: x.mappings[x.kind as "sales"], mode: x.mode[x.kind as "sales"] })),
+          jobs: jobs.map((x) => ({ sheet: x.sheet, kind: x.kind, mapping: x.mappings[x.kind as "sales"], mode: x.mode[x.kind as "sales"], date_order: x.date_order ?? "dmy" })),
         });
       } catch (e) { errors.push(`${f.name}: ${(e as Error).message}`); }
     }
@@ -209,6 +210,18 @@ export default function Import() {
                       </div>
                     </div>
                     <div className={clsx("text-xs mt-2", x.kind_reason === "unknown" ? "text-warn" : "text-good")}>{t(`imp.kindReason.${x.kind_reason}`)}</div>
+                    {k === "sales" && x.text_dates && (
+                      <div className={clsx("mt-3 rounded-lg border p-3 text-sm flex flex-wrap items-center gap-3", x.date_order_sure ? "border-line" : "border-amber-300 bg-amber-50")}>
+                        <span className="font-medium">{t("imp.dateOrder")}</span>
+                        {(["dmy", "mdy"] as const).map((o) => (
+                          <label key={o} className="flex items-center gap-2 cursor-pointer">
+                            <input type="radio" className="accent-brand" checked={(x.date_order ?? "dmy") === o} onChange={() => update(i, { date_order: o, date_order_sure: true })} />
+                            {t(`imp.dateOrders.${o}`)}
+                          </label>
+                        ))}
+                        {!x.date_order_sure && <span className="text-xs text-warn w-full">{t("imp.dateOrderAsk")}</span>}
+                      </div>
+                    )}
                     {k === "sales" && (x.warnings ?? []).map((w) => (
                       <div key={w} className="mt-2"><Notice kind={w === "time_not_mapped" ? "info" : "warning"}>{t(`imp.warn.${w}`)}</Notice></div>
                     ))}

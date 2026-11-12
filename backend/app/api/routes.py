@@ -646,6 +646,7 @@ class ImportJob(BaseModel):
     sheet: str | None = None
     kind: Literal["sales", "customers"] = "sales"
     mapping: dict[str, str | None]
+    date_order: Literal["dmy", "mdy"] = "dmy"   # 04/05/2026 = 4 May (dmy) or 5 April (mdy)
     mode: Literal["merge", "replace_period", "append_new", "replace_all", "upsert"] = "merge"
 
 
@@ -701,7 +702,8 @@ def commit(body: CommitIn, user: dict = Depends(require("import"))):
             [name, j.kind, j.mode, json.dumps(mapping), user["username"], j.sheet,
              up.get("hash"), up["size"]]).fetchone()[0]
         audit(user, "import_start", f"#{imp_id} {name} kind={j.kind} mode={j.mode}")
-        run.append({"import_id": imp_id, "kind": j.kind, "mapping": mapping, "mode": j.mode,
+        run.append({"import_id": imp_id, "kind": j.kind,
+                    "mapping": {**mapping, "_date_order": j.date_order}, "mode": j.mode,
                     "sheet": j.sheet})
     threading.Thread(target=importer.run_jobs, args=(run, up["path"]), daemon=True).start()
     return {"import_ids": [r["import_id"] for r in run], "import_id": run[0]["import_id"]}

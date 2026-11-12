@@ -478,3 +478,37 @@ def test_summary_report_warning(client):
     df.to_excel(buf, index=False)
     up = upload(client, buf.getvalue(), "Customer Sales Report.xlsx")
     assert {"summary", "one_date"} <= set(up["sheets_info"][0]["warnings"])
+
+
+def test_users_pos_export_rows_and_date_order(client):
+    import pandas as pd
+    rows = [["CA28", "53558", "ا مجدي", "01222125888", "Nasr City", "Delivery", "04/05/2026 0:00", "09:00:00 PM",
+             "2000332", "MUSTELA SKIN FRESHENER 200ML", "PAK", 1, 615, "CI"],
+            ["CA28", "53558", "ا مجدي", "01222125888", "Nasr City", "Delivery", "04/05/2026 0:00", "09:00:00 PM",
+             "2009125", "FLAMINGO FACIAL&BODY SHAVERS 3PCS", "EA", 1, 280, "CL"],
+            ["CA28", "53558", "ا مجدي", "01222125888", "Nasr City", "Delivery", "04/05/2026 0:00", "09:00:00 PM",
+             "530", "DELIVERY FEES", "EA", 1, 30, "SERV"]]
+    df = pd.DataFrame(rows, columns=["Site", "Doc No", "Customer", "Phone Number", "Customer Address", "Sales Type",
+                                     "Posting Date", "Posting Time", "Material", "Material Description", "BUn",
+                                     "Quantity", "Net Amount", "Material Group"])
+    buf = io.BytesIO()
+    df.to_excel(buf, index=False)
+    up = upload(client, buf.getvalue(), "pos_lines.xlsx")
+    sh = up["sheets_info"][0]
+    assert sh["text_dates"] and sh["date_order_sure"] is False  # 04/05 could be 4 May or 5 April
+    m = sh["mappings"]["sales"]
+    assert m["invoice_no"] == "Doc No" and m["invoice_time"] == "Posting Time"
+    r = client.post("/api/imports/commit", json={"upload_id": up["upload_id"], "jobs": [
+        {"sheet": sh["sheet"], "kind": "sales", "mapping": m, "mode": "merge", "date_order": "mdy"}]})
+    iid = r.json()["import_id"]
+    for _ in range(100):
+        st = client.get(f"/api/imports/{iid}").json()
+        if st["status"] != "running":
+            break
+        time.sleep(0.1)
+    assert st["status"] == "done" and st["rows_imported"] == 3
+    c = client.get("/api/customers", params={"q": "01222125888"}).json()["rows"][0]
+    assert c["visits"] == 1 and c["total_spent"] == 925.0 and c["branch"] == "CA28"
+    assert str(c["last_visit"]) == "2026-04-05"   # month/day/year chosen -> 5 April
+    lines = client.get("/api/sales", params={"q": "01222125888"}).json()["rows"]
+    assert {x["invoice_date"] for x in lines} == {"2026-04-05T21:00:00"}

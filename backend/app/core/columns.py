@@ -56,7 +56,9 @@ KEYWORDS = {
     "invoice_no": [
         "invoice no", "invoice number", "invoice_no", "invoice id", "receipt no",
         "receipt number", "bill no", "bill number", "transaction id", "document no",
-        "رقم الفاتورة",
+        "doc no", "doc number", "docno", "document number", "trans no", "transaction no",
+        "transaction number", "order no", "order number", "voucher no", "receipt",
+        "رقم الفاتورة", "رقم الإيصال", "رقم المستند",
     ],
     "invoice_date": [
         "date", "invoice date", "receipt date", "invdate", "transactiondate",
