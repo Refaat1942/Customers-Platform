@@ -443,3 +443,38 @@ def test_customer_totals_and_data_check(client):
     ok = [i for i in d["imports"] if i["kind"] == "sales" and i["status"] == "done" and i["rows_now"]]
     assert ok and all(i["rows_now"] > 0 for i in ok)
     assert client.post("/api/maintenance/refresh").json()["ok"]
+
+
+def test_separate_date_and_time_columns_and_branch_invoices(client):
+    import pandas as pd
+    df = pd.DataFrame({"Posting Date": ["20250127", "20250127", "20250128", "20250128"],
+                       "Time": ["14:35:00", "14:35:00", "09:10:00", "09:10:00"],
+                       "Customer Phone": ["01077700001", "01077700001", "01077700002", "01077700003"],
+                       "Branch": ["Maadi", "Maadi", "Maadi", "Nasr City"],
+                       "Bill No": ["1001", "1001", "1002", "1002"],          # same number, 2 branches
+                       "Material Description": ["A", "B", "A", "A"], "Net Amount": [10.0, 20.0, 30.0, 40.0]})
+    buf = io.BytesIO()
+    df.to_excel(buf, index=False)
+    up = upload(client, buf.getvalue(), "pos_export.xlsx")
+    m = up["mappings"]["sales"]
+    assert m["invoice_date"] == "Posting Date" and m["invoice_time"] == "Time"
+    st = _commit_and_wait(client, up, "sales", "merge", m)
+    assert st["status"] == "done" and st["rows_imported"] == 4 and st["invalid_dates"] == 0
+    rows = client.get("/api/sales", params={"q": "01077700001"}).json()["rows"]
+    assert {r["invoice_date"] for r in rows} == {"2025-01-27T14:35:00"}
+    c2 = client.get("/api/customers", params={"q": "01077700002"}).json()["rows"][0]
+    c3 = client.get("/api/customers", params={"q": "01077700003"}).json()["rows"][0]
+    assert c2["visits"] == 1 and c3["visits"] == 1
+    inv = client.get("/api/customer-totals", params={"date_from": "2025-01-28", "date_to": "2025-01-28"}).json()
+    assert inv["totals"]["invoices"] == 2   # 1002 in Maadi and 1002 in Nasr City are different
+
+
+def test_summary_report_warning(client):
+    import pandas as pd
+    from datetime import datetime
+    df = pd.DataFrame({"Phone": [f"0101234{i:04d}" for i in range(30)],
+                       "Report Date": [datetime(2026, 1, 31)] * 30, "Total Sales": [100.5 + i for i in range(30)]})
+    buf = io.BytesIO()
+    df.to_excel(buf, index=False)
+    up = upload(client, buf.getvalue(), "Customer Sales Report.xlsx")
+    assert {"summary", "one_date"} <= set(up["sheets_info"][0]["warnings"])

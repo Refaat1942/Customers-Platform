@@ -58,3 +58,16 @@ def test_date_parsing():
     out = _parse_dates(s).dt.strftime("%Y-%m-%d").tolist()
     assert out[:4] == ["2026-10-12"] * 4
     assert pd.isna(out[4]) and pd.isna(out[5])
+
+
+def test_time_only_is_not_today_and_sap_dates():
+    import datetime as dt
+
+    import pandas as pd
+
+    from app.core.importer import _parse_dates, _parse_times
+    d = _parse_dates(pd.Series(["14:35:00", dt.time(9, 15), "20250127", 20250127, "27.01.2025"], dtype=object))
+    assert d.isna().tolist()[:2] == [True, True]
+    assert d.dt.strftime("%Y-%m-%d").tolist()[2:] == ["2025-01-27"] * 3
+    t = _parse_times(pd.Series(["14:35", dt.time(9, 15), 0.5, "2:35 PM"], dtype=object))
+    assert [str(x)[-8:] for x in t] == ["14:35:00", "09:15:00", "12:00:00", "14:35:00"]

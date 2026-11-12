@@ -1032,11 +1032,13 @@ def data_check() -> dict:
             CASE WHEN i.kind = 'customers'
                  THEN (SELECT count(*) FROM customer_directory d WHERE d.import_id = i.id)
                  ELSE coalesce(s.lines, 0) END AS rows_now,
-            s.sales, s.date_from, s.date_to
+            s.sales, s.date_from, s.date_to, s.upload_day_lines
             FROM imports i LEFT JOIN (
-              SELECT import_id, count(*) AS lines, {R("sum(item_price)")} AS sales,
-                     min(day) AS date_from, max(day) AS date_to
-              FROM sales WHERE import_id IS NOT NULL GROUP BY import_id) s ON s.import_id = i.id
+              SELECT x.import_id, count(*) AS lines, {R("sum(x.item_price)")} AS sales,
+                     min(x.day) AS date_from, max(x.day) AS date_to,
+                     count(*) FILTER (WHERE x.day = im.created_at::date) AS upload_day_lines
+              FROM sales x JOIN imports im ON im.id = x.import_id
+              GROUP BY x.import_id) s ON s.import_id = i.id
             WHERE i.status IN ('done', 'running') ORDER BY i.id DESC LIMIT 200"""),
         "by_month": q_rows(f"""SELECT to_char(date_trunc('month', day), 'YYYY-MM') AS month, count(*) AS lines,
             count(DISTINCT phone) AS customers, count(DISTINCT visit_key) AS invoices,

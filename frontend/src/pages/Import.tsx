@@ -10,7 +10,7 @@ import { Badge, Card, Notice, PageHeader } from "../components/ui";
 
 type Kind = "sales" | "customers" | "skip" | "empty";
 type SheetInfo = {
-  sheet: string | null; rows: number | null; columns: string[]; kind: Kind; kind_reason: string;
+  sheet: string | null; rows: number | null; columns: string[]; kind: Kind; kind_reason: string; warnings?: string[];
   mappings: Record<"sales" | "customers", Record<string, string | null>>; sample: Record<string, any>[];
 };
 type Preview = {
@@ -209,6 +209,9 @@ export default function Import() {
                       </div>
                     </div>
                     <div className={clsx("text-xs mt-2", x.kind_reason === "unknown" ? "text-warn" : "text-good")}>{t(`imp.kindReason.${x.kind_reason}`)}</div>
+                    {k === "sales" && (x.warnings ?? []).map((w) => (
+                      <div key={w} className="mt-2"><Notice kind={w === "time_not_mapped" ? "info" : "warning"}>{t(`imp.warn.${w}`)}</Notice></div>
+                    ))}
                     {k && (
                       <>
                         {!x.open && missing.length === 0 ? (

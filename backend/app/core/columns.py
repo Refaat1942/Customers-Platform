@@ -14,6 +14,7 @@ from difflib import get_close_matches
 FIELDS = [
     "phone",
     "invoice_date",
+    "invoice_time",
     "item_price",
     "branch",
     "name",
@@ -60,6 +61,10 @@ KEYWORDS = {
     "invoice_date": [
         "date", "invoice date", "receipt date", "invdate", "transactiondate",
         "receiptdate", "datetime", "post date", "posting date", "التاريخ", "تاريخ",
+    ],
+    "invoice_time": [
+        "time", "invoice time", "posting time", "transaction time", "receipt time", "sales time",
+        "entry time", "created time", "الوقت", "وقت", "وقت الفاتورة",
     ],
     "invoice_type": [
         "type", "invoice type", "sales type", "sales type name", "sales type_name",

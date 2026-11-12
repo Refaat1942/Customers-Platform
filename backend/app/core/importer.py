@@ -5,7 +5,8 @@ import json
 import shutil
 import threading
 import zipfile
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
+from datetime import time as dt_time
 from pathlib import Path
 
 import numpy as np
@@ -172,7 +173,9 @@ def profile_columns(df: pd.DataFrame) -> dict:
             years = dates.dropna().dt.year
             date_ratio *= float(years.between(2000, 2100).mean())
             if pd.api.types.is_numeric_dtype(s) or txt.str.fullmatch(r"\d+(\.\d+)?").mean() > 0.8:
-                date_ratio *= float(pd.to_numeric(s, errors="coerce").between(30000, 60000).mean())
+                nums = pd.to_numeric(s, errors="coerce")  # Excel serial days or SAP yyyymmdd
+                date_ratio *= float((nums.between(30000, 60000) |
+                                     nums.between(19000101, 21001231)).mean())
         num = _parse_numbers(s)
         out[c] = {"n": n, "phone": float(phone), "date": float(date_ratio),
                   "num": float(num.notna().mean()),
@@ -273,6 +276,27 @@ def _jsonable(v):
     return v if isinstance(v, (int, float, bool)) else str(v)
 
 
+def sheet_warnings(df: pd.DataFrame, m: dict) -> list[str]:
+    """Things that usually mean the file is not daily transactions or a column is wrong."""
+    w = []
+    if m.get("invoice_date") in df.columns:
+        d = _parse_dates(df[m["invoice_date"]])
+        if d.notna().sum() >= 20 and d.dt.normalize().nunique() == 1:
+            w.append("one_date")
+        if d.notna().any() and (d.dt.normalize() == pd.Timestamp.now().normalize()).mean() > 0.5:
+            w.append("today")
+    if m.get("phone") in df.columns and not (m.get("item_name") or m.get("item_code") or
+                                            m.get("invoice_no")):
+        ph = df[m["phone"]].dropna().astype(str)
+        if len(ph) >= 20 and ph.nunique() / len(ph) > 0.95:
+            w.append("summary")
+    if not m.get("invoice_time"):
+        names = [clean_col_name(c) for c in df.columns]
+        if any("time" in n or "وقت" in n for n in names):
+            w.append("time_not_mapped")
+    return w
+
+
 def analyse_sheet(path: Path, sheet: str | None) -> dict:
     """Read the first rows of one sheet and decide what it is and how its columns map."""
     df = read_file(path, nrows=300, sheet=sheet)
@@ -286,6 +310,7 @@ def analyse_sheet(path: Path, sheet: str | None) -> dict:
     if reason == "unknown":
         kind = "skip"
     return {"sheet": sheet, "kind": kind, "kind_reason": reason, "columns": cols,
+            "warnings": sheet_warnings(df, maps["sales"]) if kind == "sales" else [],
             "mappings": maps, "mapping": maps.get(kind, maps["sales"]),
             "sample": [{c: _jsonable(v) for c, v in r.items()} for r in df.head(10).to_dict("records")]}
 
@@ -379,27 +404,36 @@ def _ns(v: pd.Series) -> pd.Series:
     return v.astype("datetime64[ns]")
 
 
+_TIME_ONLY = r"^\s*\d{1,2}:\d{2}(:\d{2}(\.\d+)?)?\s*([AaPp]\.?[Mm]\.?|ص|م)?\s*$"
+
+
 def _parse_dates(s: pd.Series) -> pd.Series:
-    """Excel datetimes, Excel serial numbers, ISO text (yyyy-mm-dd) and Egyptian dd/mm/yyyy text."""
+    """Excel datetimes, Excel serial numbers, SAP yyyymmdd, ISO text and Egyptian dd/mm/yyyy text.
+    A time on its own (14:35) is NOT a date - pandas would silently turn it into today."""
     if pd.api.types.is_datetime64_any_dtype(s):
         return _ns(s)
     out = pd.Series(pd.NaT, index=s.index, dtype="datetime64[ns]")
 
-    is_dt = s.map(lambda v: isinstance(v, (datetime, date)))
+    is_dt = s.map(lambda v: isinstance(v, (datetime, date)))  # datetime.time is neither
     if is_dt.any():
         out[is_dt] = _ns(s[is_dt].map(pd.Timestamp))
 
-    rest = ~is_dt & s.notna()
+    rest = ~is_dt & s.notna() & ~s.map(lambda v: isinstance(v, (dt_time, timedelta)))
     num = pd.to_numeric(s[rest], errors="coerce")
     serial = num.between(20000, 80000)  # Excel serial day numbers
     if serial.any():
         idx = num[serial].index
         out[idx] = _ns(pd.to_datetime(num[serial], unit="D", origin="1899-12-30"))
-        rest[idx] = False
+    ymd = num.between(19000101, 21001231) & (num % 1 == 0)  # SAP style 20250127
+    if ymd.any():
+        idx = num[ymd].index
+        out[idx] = _ns(pd.to_datetime(num[ymd].astype("int64").astype(str), format="%Y%m%d",
+                                      errors="coerce"))
     rest &= ~pd.Series(num.notna(), index=num.index).reindex(s.index, fill_value=False)
 
     if rest.any():
         txt = s[rest].astype(str).str.strip()
+        txt = txt[~txt.str.match(_TIME_ONLY)]
         iso = txt.str.match(r"^\d{4}-\d{1,2}-\d{1,2}")
         if iso.any():
             out[txt[iso].index] = _ns(pd.to_datetime(txt[iso], errors="coerce", format="ISO8601"))
@@ -407,6 +441,29 @@ def _parse_dates(s: pd.Series) -> pd.Series:
             out[txt[~iso].index] = _ns(pd.to_datetime(txt[~iso], errors="coerce", dayfirst=True,
                                                       format="mixed"))
     return out
+
+
+def _parse_times(s: pd.Series) -> pd.Series:
+    """Time of day as a timedelta: 14:35, 2:35 PM, Excel fractions (0.6076), time/datetime cells."""
+    def one(v):
+        if v is None or (isinstance(v, float) and np.isnan(v)):
+            return pd.NaT
+        if isinstance(v, dt_time):
+            return pd.Timedelta(hours=v.hour, minutes=v.minute, seconds=v.second)
+        if isinstance(v, datetime):
+            return pd.Timedelta(hours=v.hour, minutes=v.minute, seconds=v.second)
+        if isinstance(v, timedelta):
+            return pd.Timedelta(v) if v < timedelta(days=1) else pd.NaT
+        if isinstance(v, (int, float)) and 0 <= v < 1:
+            return pd.Timedelta(days=float(v)).round("s")
+        t = str(v).strip().replace("ص", "AM").replace("م", "PM")
+        try:
+            x = pd.to_datetime(t, format="mixed")
+            return pd.Timedelta(hours=x.hour, minutes=x.minute, seconds=x.second)
+        except (ValueError, TypeError):
+            return pd.NaT
+    uniq = {v: one(v) for v in pd.unique(s.astype(object))} if len(s) else {}
+    return s.astype(object).map(lambda v: uniq.get(v, pd.NaT)).astype("timedelta64[ns]")
 
 
 def _parse_numbers(s: pd.Series) -> pd.Series:
@@ -465,6 +522,14 @@ def build_frame(raw: pd.DataFrame, mapping: dict) -> tuple[pd.DataFrame, dict]:
     else:
         out["district"] = out["district"].fillna("Unknown")
 
+    t = src("invoice_time")
+    if t is not None:  # separate time column: date + time
+        times = _parse_times(t)
+        has_time = times.notna() & (out["invoice_date"] == out["invoice_date"].dt.normalize())
+        out.loc[has_time, "invoice_date"] = out.loc[has_time, "invoice_date"].dt.normalize() + times[has_time]
+    # a sale can't be in the future (usually a wrongly read column)
+    out.loc[out["invoice_date"] > pd.Timestamp.now() + pd.Timedelta(days=1), "invoice_date"] = pd.NaT
+
     bad_date = out["invoice_date"].isna()
     stats["invalid_dates"] = int(bad_date.sum())
     out = out[~bad_date].copy()
@@ -473,7 +538,9 @@ def build_frame(raw: pd.DataFrame, mapping: dict) -> tuple[pd.DataFrame, dict]:
     out["season"] = out["invoice_date"].dt.month.map(SEASONS)
     fallback_key = (out["phone"].fillna("?") + "|" + out["day"].dt.strftime("%Y-%m-%d")
                     + "|" + out["branch"].fillna("").astype(str))
-    out["visit_key"] = out["invoice_no"].where(out["invoice_no"].notna(), fallback_key)
+    # transaction numbers are unique per branch POS: 1001 in Maadi != 1001 in Nasr City
+    branch_inv = out["branch"].fillna("").astype(str) + "|" + out["invoice_no"].fillna("").astype(str)
+    out["visit_key"] = branch_inv.where(out["invoice_no"].notna(), fallback_key)
     return out, stats
 
 

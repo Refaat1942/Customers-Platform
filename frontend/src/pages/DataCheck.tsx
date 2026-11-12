@@ -37,6 +37,10 @@ export default function DataCheck() {
             <Kpi label={t("dc.pos")} value={fmtInt(d.totals.pos_lines)} />
             <Kpi label={t("dc.listed")} value={fmtInt(d.directory.customers)} />
           </div>
+          {d.imports.some((r: any) => r.upload_day_lines > 0 && r.upload_day_lines >= 0.2 * r.rows_now) && (
+            <Notice kind="danger">{d.imports.filter((r: any) => r.upload_day_lines > 0 && r.upload_day_lines >= 0.2 * r.rows_now)
+              .map((r: any) => `#${r.id} ${r.filename}: ${t("dc.uploadDay", { n: fmtInt(r.upload_day_lines) })}`).join("  ·  ")}</Notice>
+          )}
           <Card title={t("dc.imports")}>
             <DataTable rows={d.imports} maxHeight={480} columns={[
               { key: "id", label: "#", num: true },
@@ -45,6 +49,8 @@ export default function DataCheck() {
               { key: "rows_imported", label: t("dc.rowsAdded"), num: true, render: (r) => fmtInt(r.rows_imported) },
               { key: "rows_now", label: t("dc.rowsNow"), num: true, render: (r) => <b>{fmtInt(r.rows_now)}</b> },
               { key: "check", label: "", render: (r) => r.status === "running" ? <Badge kind="attention">…</Badge>
+                  : r.upload_day_lines > 0 && r.upload_day_lines >= 0.2 * r.rows_now
+                    ? <span title={t("dc.uploadDay", { n: fmtInt(r.upload_day_lines) })}><Badge kind="inactive">⚠ {t("dc.uploadDay", { n: fmtInt(r.upload_day_lines) }).split(" - ")[0]}</Badge></span>
                   : r.rows_now >= r.rows_imported ? <Badge kind="active">{t("dc.ok")}</Badge>
                   : <span title={t("dc.removed")}><Badge kind="attention">−{fmtInt(r.rows_imported - r.rows_now)}</Badge></span> },
               { key: "sales", label: t("dc.sales"), num: true, render: (r) => (r.sales == null ? "–" : fmtMoney(r.sales)) },

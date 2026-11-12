@@ -242,6 +242,12 @@ def _build_indexes():
             if bad:  # an interrupted concurrent build leaves an invalid index behind
                 conn.execute("DROP INDEX CONCURRENTLY IF EXISTS sales_match_idx")
             conn.execute(MATCH_INDEX)
+            # invoice numbers are unique per branch: old file imports used the bare number
+            n = conn.execute("""UPDATE sales SET visit_key = coalesce(branch, '') || '|' || invoice_no
+                WHERE invoice_no IS NOT NULL AND source IS NULL AND visit_key = invoice_no""").rowcount
+            if n:
+                _log(f"invoice keys made branch-specific on {n} lines")
+                bump_version()
     except Exception as e:  # noqa: BLE001 - only speeds things up
         _log(f"index build skipped: {e}")
 
