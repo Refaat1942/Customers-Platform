@@ -12,12 +12,16 @@ One definition of every metric, shared by every page:
 """
 
 import hashlib
+import re
+import threading
+from collections import OrderedDict
 import os
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from datetime import date, timedelta
 
 from .. import config, db
+from .phone import is_valid_egy_mobile, normalize_egy_phone
 
 SEASON_ORDER = ["Winter", "Spring", "Summer", "Autumn"]
 
@@ -216,11 +220,77 @@ def customers_cte(f: Filters, settings: dict, ref: date | None) -> tuple[str, li
     return sql, params + params + [ref] + tail
 
 
+def phone_query(q: str) -> str | None:
+    """'+20 101 234 5678', '1012345678', '0101-234-5678' -> '1012345678' (digits to look for)."""
+    raw = re.sub(r"[\s\-+()]", "", q or "")
+    digits = "".join(ch for ch in raw if ch.isdigit())
+    if len(digits) < 4 or len(digits) < 0.8 * len(raw):
+        return None  # not a phone number - search by name instead
+    if digits.startswith("20") and len(digits) >= 12:
+        digits = digits[2:]
+    return digits.lstrip("0") or digits
+
+
+# ---- customer statistics are computed ONCE per filter set into a small table, so search,
+#      sort and paging are instant (instead of re-aggregating all sales for every keystroke)
+_cc_lock = threading.Lock()
+_cc_key_locks: dict[str, threading.Lock] = {}
+_cc_tables: "OrderedDict[str, tuple[int, object]]" = OrderedDict()
+CC_KEEP = 8
+
+
+def customer_table(f: Filters, settings: dict) -> tuple[str, object]:
+    ver = db._version
+    name = "cc_" + hashlib.sha1(repr((ver, f.key())).encode()).hexdigest()[:16]
+    with _cc_lock:
+        if name in _cc_tables:
+            _cc_tables.move_to_end(name)
+            return name, _cc_tables[name][1]
+        klock = _cc_key_locks.setdefault(name, threading.Lock())
+    with klock:
+        with _cc_lock:
+            if name in _cc_tables:
+                return name, _cc_tables[name][1]
+        cur = db.cursor()
+        ref = reference_date(cur, f)
+        cte, params = customers_cte(f, settings, ref)
+        cur.execute(f"DROP TABLE IF EXISTS {name}")
+        cur.execute(f"CREATE UNLOGGED TABLE {name} AS WITH {cte} SELECT * FROM cust", params)
+        cur.execute(f"CREATE INDEX ON {name} (phone)")
+        cur.execute(f"ANALYZE {name}")
+        with _cc_lock:
+            _cc_tables[name] = (ver, ref)
+            old = [n for n, (v, _) in _cc_tables.items() if v != ver]
+            old += [n for n in list(_cc_tables)[:-CC_KEEP] if n not in old]
+            for n in old:
+                _cc_tables.pop(n, None)
+                _cc_key_locks.pop(n, None)
+        for n in old:
+            try:
+                cur.execute(f"DROP TABLE IF EXISTS {n}")
+            except Exception:  # noqa: BLE001 - may still be read by a slow request
+                pass
+        return name, ref
+
+
+def drop_customer_tables():
+    cur = db.cursor()
+    for (n,) in cur.execute("SELECT tablename FROM pg_tables WHERE tablename LIKE 'cc\\_%'").fetchall():
+        cur.execute(f"DROP TABLE IF EXISTS {n}")
+    with _cc_lock:
+        _cc_tables.clear()
+
+
 def _customer_where(q=None, status=None, flag=None, segment=None, churn=None, ref=None):
     conds, params = ["TRUE"], []
     if q:
-        conds.append("(phone ILIKE ? OR name ILIKE ?)")
-        params += [f"%{q}%", f"%{q}%"]
+        digits = phone_query(q)
+        if digits:
+            conds.append("phone LIKE ?")
+            params.append(f"%{digits}%")
+        else:
+            conds.append("(name ILIKE ? OR phone ILIKE ?)")
+            params += [f"%{q.strip()}%", f"%{q.strip()}%"]
     if status:
         conds.append("status = ANY(?)")
         params.append(list(status))
@@ -249,23 +319,20 @@ def _customer_where(q=None, status=None, flag=None, segment=None, churn=None, re
 def list_customers(f: Filters, settings: dict, *, q=None, status=None, flag=None, segment=None,
                    churn=None, sort="priority", desc=True, page=1, page_size=50,
                    limit_all=False) -> dict:
+    table, ref = customer_table(f, settings)
     cur = db.cursor()
-    ref = reference_date(cur, f)
-    cte, params = customers_cte(f, settings, ref)
     where, wp = _customer_where(q, status, flag, segment, churn, ref)
-
     order = CUSTOMER_SORTS.get(sort, CUSTOMER_SORTS["priority"])
     if sort != "priority":
         order = f"{order} {'DESC' if desc else 'ASC'} NULLS LAST, phone"
-    sql = (f"WITH {cte} SELECT {', '.join(CUSTOMER_COLUMNS)}, count(*) OVER () AS _total "
-           f"FROM cust WHERE {where} ORDER BY {order}")
+    sql = (f"SELECT {', '.join(CUSTOMER_COLUMNS)}, count(*) OVER () AS _total "
+           f"FROM {table} WHERE {where} ORDER BY {order}")
     sql += " LIMIT 1048000" if limit_all else \
         f" LIMIT {int(page_size)} OFFSET {int((page - 1) * page_size)}"
-    rows = db.rows(cur, sql, params + wp)
+    rows = db.rows(cur, sql, wp)
     total = rows[0]["_total"] if rows else 0
     if not rows and page > 1:
-        total = cur.execute(f"WITH {cte} SELECT count(*) FROM cust WHERE {where}",
-                            params + wp).fetchone()[0]
+        total = cur.execute(f"SELECT count(*) FROM {table} WHERE {where}", wp).fetchone()[0]
     for r in rows:
         r.pop("_total", None)
         r["cid"] = cid(r["phone"])
@@ -273,12 +340,11 @@ def list_customers(f: Filters, settings: dict, *, q=None, status=None, flag=None
 
 
 def customer_profile(phone: str, f: Filters, settings: dict) -> dict | None:
-    cur = db.cursor()
-    ref = reference_date(cur, f)
     # profile = this customer over the selected period (scores relative to all customers)
-    cte, params = customers_cte(f, settings, ref)
-    summary = db.one(cur, f"WITH {cte} SELECT {', '.join(CUSTOMER_COLUMNS)} FROM cust "
-                          f"WHERE phone = ?", params + [phone])
+    table, ref = customer_table(f, settings)
+    cur = db.cursor()
+    summary = db.one(cur, f"SELECT {', '.join(CUSTOMER_COLUMNS)} FROM {table} WHERE phone = ?",
+                     [phone])
     if not summary:
         return None
     summary["cid"] = cid(phone)
@@ -367,14 +433,16 @@ def summary(f: Filters, settings: dict) -> dict:
     for k, c in top_keys:
         tasks[k] = top(c)
 
-    cte, cp = customers_cte(f, settings, ref)
-    tasks["segments"] = q_one(f"""WITH {cte} SELECT
+    def segments():
+        table, _ = customer_table(f, settings)
+        return db.one(db.cursor(), f"""SELECT
         count(*) FILTER (WHERE status='active') AS active,
         count(*) FILTER (WHERE status='attention') AS attention,
         count(*) FILTER (WHERE status='inactive') AS inactive,
         count(*) FILTER (WHERE high_value) AS high_value,
         count(*) FILTER (WHERE loyal) AS loyal,
-        count(*) FILTER (WHERE NOT phone_valid) AS invalid_phone FROM cust""", cp)
+        count(*) FILTER (WHERE NOT phone_valid) AS invalid_phone FROM {table}""")
+    tasks["segments"] = segments
     tasks["monthly"] = q_rows(f"""SELECT to_char(date_trunc('month', day), 'YYYY-MM') AS month,
         {R("sum(item_price)")} AS sales, count(DISTINCT phone) AS customers,
         count(DISTINCT visit_key) AS invoices FROM sales WHERE {w} GROUP BY 1 ORDER BY 1""", p)
@@ -408,38 +476,34 @@ def summary(f: Filters, settings: dict) -> dict:
 # ====================================================================== smart insights
 def _customer_health(f: Filters, settings: dict, ref) -> dict:
     """RFM / churn / due / pareto from ONE materialised customer table."""
+    table, _ = customer_table(f, settings)
     cur = db.cursor()
-    cte, cp = customers_cte(f, settings, ref)
-    cur.execute("DROP TABLE IF EXISTS pg_temp.cust_tmp")
-    cur.execute(f"CREATE TEMP TABLE cust_tmp AS WITH {cte} SELECT * FROM cust", cp)
-    try:
+    if True:
         rfm = db.rows(cur, f"""SELECT segment, count(*) AS customers,
             {R("sum(total_spent)")} AS sales,
             {R("100 * sum(total_spent) / nullif(sum(sum(total_spent)) OVER (), 0)")} AS share,
             {R("avg(total_spent)")} AS avg_spend, round(avg(visits), 1)::float8 AS avg_visits,
             round(avg(days_since))::int AS avg_days_since
-            FROM cust_tmp GROUP BY segment""")
+            FROM {table} GROUP BY segment""")
         rfm.sort(key=lambda r: SEGMENTS.index(r["segment"]) if r["segment"] in SEGMENTS else 99)
         churn = db.rows(cur, f"""SELECT churn_risk, count(*) AS customers,
             {R("sum(total_spent)")} AS sales, {R("sum(avg_per_visit)")} AS value_per_visit
-            FROM cust_tmp GROUP BY churn_risk""")
-        directory = db.one(cur, """SELECT count(*) AS listed,
-            count(*) FILTER (WHERE NOT EXISTS (SELECT 1 FROM cust_tmp c WHERE c.phone = d.phone))
+            FROM {table} GROUP BY churn_risk""")
+        directory = db.one(cur, f"""SELECT count(*) AS listed,
+            count(*) FILTER (WHERE NOT EXISTS (SELECT 1 FROM {table} c WHERE c.phone = d.phone))
               AS never_bought
             FROM customer_directory d""")
-        due = db.one(cur, """SELECT
+        due = db.one(cur, f"""SELECT
             count(*) FILTER (WHERE expected_next BETWEEN ?::date AND ?::date + 7) AS due_soon,
             count(*) FILTER (WHERE overdue_days > 0) AS overdue,
             count(*) FILTER (WHERE branches_count > 1) AS multi_branch,
-            count(*) AS customers FROM cust_tmp""", [ref, ref])
+            count(*) AS customers FROM {table}""", [ref, ref])
         pareto = db.one(cur, f"""WITH t AS (
-              SELECT total_spent, ntile(5) OVER (ORDER BY total_spent DESC) AS q FROM cust_tmp)
+              SELECT total_spent, ntile(5) OVER (ORDER BY total_spent DESC) AS q FROM {table})
             SELECT {R("100 * sum(total_spent) FILTER (WHERE q = 1) / nullif(sum(total_spent), 0)")}
                    AS top20_share,
                    {R("100 * sum(total_spent) FILTER (WHERE q = 5) / nullif(sum(total_spent), 0)")}
                    AS bottom20_share FROM t""")
-    finally:
-        cur.execute("DROP TABLE IF EXISTS pg_temp.cust_tmp")
     return {"rfm": rfm, "churn": churn, "due": due, "pareto": pareto, "directory": directory}
 
 
@@ -774,8 +838,17 @@ def list_sales(f: Filters, *, q=None, sort="invoice_date", desc=True, page=1, pa
     cur = db.cursor()
     w, p = f.where()
     if q:
-        w += " AND (phone ILIKE ? OR name ILIKE ? OR item_name ILIKE ? OR invoice_no ILIKE ?)"
-        p = p + [f"%{q}%"] * 4
+        digits = phone_query(q)
+        full = normalize_egy_phone(q)
+        if digits and is_valid_egy_mobile(full):
+            w += " AND phone = ?"            # indexed: instant
+            p = p + [full]
+        elif digits:
+            w += " AND (phone LIKE ? OR invoice_no ILIKE ?)"
+            p = p + [f"%{digits}%", f"%{q.strip()}%"]
+        else:
+            w += " AND (name ILIKE ? OR item_name ILIKE ? OR invoice_no ILIKE ?)"
+            p = p + [f"%{q.strip()}%"] * 3
     sort = sort if sort in SALES_SORTS else "invoice_date"
     agg = db.one(cur, f"SELECT count(*) AS total, {R('coalesce(sum(item_price), 0)')} AS sales "
                       f"FROM sales WHERE {w}", p)
@@ -926,3 +999,54 @@ def live(allowed_branches=None, branch: str | None = None) -> dict:
             "top_items": top_items,
             "has_pos": bool(cur.execute("SELECT 1 FROM sales WHERE source = 'pos' LIMIT 1").fetchone()
                             or cur.execute("SELECT 1 FROM api_keys LIMIT 1").fetchone())}
+
+
+# ====================================================================== totals & data check
+def filter_totals(f: Filters) -> dict:
+    """Totals for the current filters + breakdown by sales type (Customers page summary)."""
+    w, p = f.where()
+    tasks = {
+        "totals": q_one(f"""SELECT count(DISTINCT phone) AS customers, count(DISTINCT visit_key) AS invoices,
+            {R("coalesce(sum(item_price), 0)")} AS sales, count(*) AS lines,
+            min(day) AS date_from, max(day) AS date_to FROM sales WHERE {w}""", p),
+        "by_type": q_rows(f"""SELECT coalesce(invoice_type, '—') AS sales_type,
+            count(DISTINCT phone) AS customers, count(DISTINCT visit_key) AS invoices,
+            {R("sum(item_price)")} AS sales,
+            {R("100 * sum(item_price) / nullif(sum(sum(item_price)) OVER (), 0)")} AS share
+            FROM sales WHERE {w} GROUP BY 1 ORDER BY sales DESC NULLS LAST""", p),
+    }
+    return parallel(tasks)
+
+
+def data_check() -> dict:
+    """Everything that is stored right now - to verify that uploads reached the database."""
+    tasks = {
+        "totals": q_one(f"""SELECT count(*) AS lines, count(DISTINCT phone) AS customers,
+            count(DISTINCT visit_key) AS invoices, {R("coalesce(sum(item_price), 0)")} AS sales,
+            min(day) AS date_from, max(day) AS date_to,
+            count(*) FILTER (WHERE source = 'pos') AS pos_lines,
+            count(*) FILTER (WHERE phone IS NULL) AS lines_without_phone FROM sales"""),
+        "directory": q_one("SELECT count(*) AS customers, max(updated_at) AS updated_at FROM customer_directory"),
+        "imports": q_rows(f"""SELECT i.id, i.filename, i.kind, i.status, i.mode, i.rows_read,
+            i.rows_imported, i.rows_skipped, i.finished_at,
+            CASE WHEN i.kind = 'customers'
+                 THEN (SELECT count(*) FROM customer_directory d WHERE d.import_id = i.id)
+                 ELSE coalesce(s.lines, 0) END AS rows_now,
+            s.sales, s.date_from, s.date_to
+            FROM imports i LEFT JOIN (
+              SELECT import_id, count(*) AS lines, {R("sum(item_price)")} AS sales,
+                     min(day) AS date_from, max(day) AS date_to
+              FROM sales WHERE import_id IS NOT NULL GROUP BY import_id) s ON s.import_id = i.id
+            WHERE i.status IN ('done', 'running') ORDER BY i.id DESC LIMIT 200"""),
+        "by_month": q_rows(f"""SELECT to_char(date_trunc('month', day), 'YYYY-MM') AS month, count(*) AS lines,
+            count(DISTINCT phone) AS customers, count(DISTINCT visit_key) AS invoices,
+            {R("sum(item_price)")} AS sales FROM sales GROUP BY 1 ORDER BY 1 DESC"""),
+        "by_type": q_rows(f"""SELECT coalesce(invoice_type, '—') AS sales_type, count(*) AS lines,
+            count(DISTINCT phone) AS customers, {R("sum(item_price)")} AS sales
+            FROM sales GROUP BY 1 ORDER BY sales DESC NULLS LAST"""),
+        "by_branch": q_rows(f"""SELECT coalesce(branch, '—') AS branch, count(*) AS lines,
+            count(DISTINCT phone) AS customers, {R("sum(item_price)")} AS sales,
+            min(day) AS date_from, max(day) AS date_to
+            FROM sales GROUP BY 1 ORDER BY sales DESC NULLS LAST"""),
+    }
+    return parallel(tasks)

@@ -431,3 +431,15 @@ def test_queued_import_can_be_cancelled(client):
             break
         time.sleep(0.1)
     assert st["status"] == "failed" and st["message"] == "Cancelled by user" and st["rows_imported"] == 0
+
+
+def test_customer_totals_and_data_check(client):
+    t = client.get("/api/customer-totals", params={"date_from": "2026-01-01"}).json()
+    assert t["totals"]["customers"] > 0 and t["by_type"]
+    assert abs(sum(x["sales"] for x in t["by_type"]) - t["totals"]["sales"]) < 1
+    full = client.get("/api/customer-totals").json()["totals"]
+    d = client.get("/api/maintenance/data-check").json()
+    assert d["totals"]["lines"] == full["lines"] and d["totals"]["sales"] == full["sales"]
+    ok = [i for i in d["imports"] if i["kind"] == "sales" and i["status"] == "done" and i["rows_now"]]
+    assert ok and all(i["rows_now"] > 0 for i in ok)
+    assert client.post("/api/maintenance/refresh").json()["ok"]

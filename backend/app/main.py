@@ -15,6 +15,8 @@ async def lifespan(app: FastAPI):
     db.init()
     ensure_admin_exists()
     cleanup_stale_uploads()
+    from .core.analytics import drop_customer_tables
+    drop_customer_tables()
     # imports interrupted by a restart can never finish
     db.cursor().execute("UPDATE imports SET status='failed', message='Interrupted by a server "
                         "restart, please import the file again' WHERE status='running'")

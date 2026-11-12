@@ -568,6 +568,7 @@ def _warm_cache():
         f, s = an.Filters(), db.get_settings()
         db.cached(("summary", f.key()), lambda: an.summary(f, s))
         db.cached(("insights", f.key()), lambda: an.insights(f, s))
+        an.customer_table(f, s)  # customers page ready too
     except Exception:  # noqa: BLE001 - only an optimisation
         pass
 

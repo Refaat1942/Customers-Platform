@@ -400,6 +400,12 @@ def get_customers(
     return xlsx_response(content, f"{view}_{date.today().isoformat()}.xlsx")
 
 
+@router.get("/customer-totals")
+def get_customer_totals(f: an.Filters = Depends(filters), user: dict = Depends(require("customers"))):
+    """How many customers / invoices / sales match the filters, split by sales type."""
+    return db.cached(("filter_totals", f.key()), lambda: an.filter_totals(f))
+
+
 @router.get("/customers/{cid}")
 def get_customer(cid: str, f: an.Filters = Depends(filters), export: bool = False,
                  lang: str = "en", user: dict = Depends(require("customers"))):
@@ -758,6 +764,23 @@ def delete_duplicates(user: dict = Depends(require("import"))):
         n = importer.remove_duplicates(db.connection())
     audit(user, "duplicates_removed", f"{n} duplicate sales lines removed")
     return {"removed": n}
+
+
+@router.get("/maintenance/data-check")
+def get_data_check(user: dict = Depends(require("import"))):
+    """Live numbers straight from the database (never cached)."""
+    res = an.data_check()
+    res["checked_at"] = datetime.now()
+    res["cache_version"] = db._version
+    return res
+
+
+@router.post("/maintenance/refresh")
+def refresh_analytics(user: dict = Depends(require("import"))):
+    """Throw away all cached results: every page recalculates from the database."""
+    db.bump_version()
+    audit(user, "analytics_refresh")
+    return {"ok": True}
 
 
 def cleanup_stale_uploads():

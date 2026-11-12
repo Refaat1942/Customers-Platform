@@ -3,7 +3,7 @@ import { Link, NavLink, Outlet, useLocation } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import clsx from "clsx";
 import {
-  Activity, BarChart3, BookUser, Bot, Package, Briefcase, FileClock, Globe, LayoutDashboard, LogOut, MapPin, Menu, PhoneCall,
+  Activity, BarChart3, BookUser, Bot, DatabaseZap, Package, Briefcase, FileClock, Globe, LayoutDashboard, LogOut, MapPin, Menu, PhoneCall,
   Receipt, Settings, Sparkles, Upload, UserCog, UserRound, Users, X,
 } from "lucide-react";
 import { useAuth } from "../lib/auth";
@@ -28,6 +28,7 @@ const ANALYSIS: Item[] = [
 ];
 const ADMIN: Item[] = [
   { to: "/import", key: "import", perm: "import", icon: Upload },
+  { to: "/data-check", key: "datacheck", perm: "import", icon: DatabaseZap },
   { to: "/users", key: "users", perm: "users", icon: UserCog },
   { to: "/settings", key: "settings", perm: "settings", icon: Settings },
   { to: "/audit", key: "audit", perm: "audit", icon: FileClock },

@@ -7,6 +7,7 @@ import { api } from "../lib/api";
 import { useFilters } from "../lib/filters";
 import { fmtDate, fmtInt, fmtMoney, fmtNum } from "../lib/format";
 import FilterBar from "../components/FilterBar";
+import FilterTotals from "../components/FilterTotals";
 import DataTable, { type Column } from "../components/DataTable";
 import { Badge, ErrorBox, ExportButton, MultiSelect, PageHeader } from "../components/ui";
 
@@ -93,11 +94,12 @@ export default function Customers({ view }: { view: View }) {
       <PageHeader title={titles[view][0]} subtitle={titles[view][1]}
         actions={<ExportButton path="/customers" params={{ ...query, page: undefined, page_size: undefined }} />} />
       <FilterBar />
+      <FilterTotals />
       <div className="card p-4">
         <div className="flex flex-wrap items-end gap-3 mb-4">
           <div className="relative flex-1 min-w-56">
             <Search size={16} className="absolute top-2.5 start-3 text-muted" />
-            <input className="input ps-9" placeholder={`${t("col.phone")} / ${t("col.name")}…`} value={qText} onChange={(e) => setQText(e.target.value)} />
+            <input className="input ps-9" placeholder={t("cust.searchHint")} value={qText} onChange={(e) => setQText(e.target.value)} />
           </div>
           <div>
             <span className="label">&nbsp;</span>
