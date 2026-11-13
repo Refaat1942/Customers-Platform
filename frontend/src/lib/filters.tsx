@@ -52,6 +52,25 @@ export function FiltersProvider({ children }: { children: ReactNode }) {
   const [f, setF] = useState<FilterState>(load);
   const { data: meta } = useQuery({ queryKey: ["meta"], queryFn: () => api.get<Meta>("/meta"), staleTime: 60_000 });
 
+  // drop remembered filters that don't exist in the current data (e.g. after deleting and
+  // re-uploading): an old branch or an old custom date range would hide everything
+  useEffect(() => {
+    if (!meta) return;
+    setF((s) => {
+      const keep = (vals: string[], opts: string[]) => vals.filter((v) => opts.includes(v));
+      const n = {
+        ...s,
+        branch: keep(s.branch, meta.branches), type: keep(s.type, meta.types),
+        district: keep(s.district, meta.districts), season: keep(s.season, meta.seasons),
+      };
+      const outside = n.preset === "custom" && meta.date_min && meta.date_max &&
+        ((n.date_from && n.date_from > meta.date_max) || (n.date_to && n.date_to < meta.date_min));
+      if (outside || !meta.date_max) Object.assign(n, { preset: "all", date_from: "", date_to: "" });
+      const same = JSON.stringify(n) === JSON.stringify(s);
+      return same ? s : n;
+    });
+  }, [meta]);
+
   // keep relative presets fresh when new data is imported
   useEffect(() => {
     if (!meta || f.preset === "custom" || f.preset === "all") return;
