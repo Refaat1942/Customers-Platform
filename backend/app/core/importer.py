@@ -150,7 +150,8 @@ def file_sha256(path: Path) -> str:
 
 
 def header_signature(columns, kind: str = "sales") -> str:
-    key = kind + ":" + "|".join(sorted(clean_col_name(c) for c in columns))
+    # "v2": mappings remembered before the date fix (time column used as date) are ignored
+    key = "v2:" + kind + ":" + "|".join(sorted(clean_col_name(c) for c in columns))
     return hashlib.sha1(key.encode()).hexdigest()
 
 
@@ -254,11 +255,22 @@ def suggest_mappings(columns, df: pd.DataFrame) -> dict:
         fields = FIELDS if kind == "sales" else CUSTOMER_FIELDS
         saved = db.one(cur, "SELECT mapping FROM saved_mappings WHERE signature = ?",
                        [header_signature(columns, kind)])
+        fresh = guess()
         if saved:
             mm = json.loads(saved["mapping"])
-            out[kind] = {f: (mm.get(f) if mm.get(f) in columns else None) for f in fields}
+            merged = {f: (mm.get(f) if mm.get(f) in columns else None) for f in fields}
+            # fields added since it was saved (e.g. invoice_time) come from the fresh guess
+            for f in fields:
+                if f not in mm and fresh.get(f) and fresh[f] not in merged.values():
+                    merged[f] = fresh[f]
+            # never trust a remembered choice blindly: check phone/date/amount against the values
+            checked = smart_sales_mapping(df, merged, prof) if kind == "sales" else merged
+            for f in fields:  # empty fields: take the fresh guess if that column is still free
+                if not checked.get(f) and fresh.get(f) and fresh[f] not in checked.values():
+                    checked[f] = fresh[f]
+            out[kind] = checked
         else:
-            out[kind] = guess()
+            out[kind] = fresh
     if out["customers"].get("phone") is None and out["sales"].get("phone"):
         out["customers"]["phone"] = out["sales"]["phone"]
     return out
@@ -683,6 +695,12 @@ def run_import(import_id: int, path: Path, mapping: dict, mode: str, sheet: str 
                 checked = True
             _check_cancel(import_id)
             frame, st = build_frame(chunk, mapping)
+            if stats["rows_read"] == 0 and st["rows_read"] >= 50 and st["invalid_dates"] > 0.9 * st["rows_read"]:
+                col = mapping.get("invoice_date")
+                sample = ", ".join(str(v) for v in chunk[col].dropna().astype(str).head(3)) if col in chunk else ""
+                raise ValueError(f"The 'Invoice date' column '{col}' does not contain dates "
+                                 f"(examples: {sample}). Upload again and choose the column with the "
+                                 f"sale date - put a time-only column in 'Invoice time'.")
             for k in stats:
                 stats[k] += st[k]
             _copy_frame(cur, stage_tbl, frame.assign(import_id=import_id)[SALES_COLS])

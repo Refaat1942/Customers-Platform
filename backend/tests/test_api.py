@@ -512,3 +512,29 @@ def test_users_pos_export_rows_and_date_order(client):
     assert str(c["last_visit"]) == "2026-04-05"   # month/day/year chosen -> 5 April
     lines = client.get("/api/sales", params={"q": "01222125888"}).json()["rows"]
     assert {x["invoice_date"] for x in lines} == {"2026-04-05T21:00:00"}
+
+
+def test_bad_remembered_mapping_is_corrected(client):
+    """A layout remembered with the TIME column as date (old bug) must not be reused blindly."""
+    import json
+
+    import pandas as pd
+    from app import db
+    from app.core import importer
+    from datetime import datetime
+    df = pd.DataFrame({"Phone": ["01033300001"] * 60, "Date": [datetime(2026, 5, 4)] * 60,
+                       "Time": ["09:00:00 PM"] * 60, "Item": ["A"] * 60, "Amount": [10.5] * 60})
+    cols = list(df.columns)
+    bad = {f: None for f in importer.FIELDS}
+    bad.update(phone="Phone", invoice_date="Time", item_price="Amount", item_name="Item")
+    db.cursor().execute("INSERT INTO saved_mappings VALUES (?, ?) ON CONFLICT (signature) DO UPDATE "
+                        "SET mapping = EXCLUDED.mapping", [importer.header_signature(cols, "sales"), json.dumps(bad)])
+    buf = io.BytesIO()
+    df.to_excel(buf, index=False)
+    up = upload(client, buf.getvalue(), "again.xlsx")
+    m = up["mappings"]["sales"]
+    assert m["invoice_date"] == "Date" and m["invoice_time"] == "Time"
+
+    # and if someone still picks the time column as the date, the import stops with a clear message
+    st = _commit_and_wait(client, up, "sales", "merge", {**m, "invoice_date": "Time", "invoice_time": None})
+    assert st["status"] == "failed" and "does not contain dates" in st["message"]
