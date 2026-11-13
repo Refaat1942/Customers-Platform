@@ -427,15 +427,31 @@ def get_customer(cid: str, f: an.Filters = Depends(filters), export: bool = Fals
     info = ex.frame([s], info_cols, lang).T.reset_index()
     info.columns = [ex.label("metric", lang), ex.label("value", lang)]
     ar = lang == "ar"
+    lines = an.customer_lines(phone, f)
+    protect(lines, user)
     sheets = [
         ("العميل" if ar else "Customer", info),
         ("الزيارات" if ar else "Visits",
-         ex.frame(res["visits"], ["date", "branch", "sales_type", "lines", "total", "items"], lang)),
+         ex.frame(res["visits"], ["date", "branch", "invoice_no", "sales_type", "lines", "total",
+                                  "items"], lang)),
+        ("أصناف كل زيارة" if ar else "Items per visit",
+         ex.frame(lines, an.VISIT_LINE_COLUMNS + ["unit_price"], lang)),
         ("الأصناف" if ar else "Items",
-         ex.frame(res["top_items"], ["item", "quantity", "sales", "times"], lang)),
+         ex.frame(res["items"], ["item", "code", "category", "quantity", "times", "sales",
+                                 "avg_price", "first_bought", "last_bought"], lang)),
         ("شهري" if ar else "Monthly", ex.frame(res["monthly"], ["month", "sales", "visits"], lang)),
     ]
     return xlsx_response(ex.workbook(sheets, lang), f"customer_{cid}.xlsx")
+
+
+@router.get("/customers/{cid}/visit")
+def get_customer_visit(cid: str, key: str, f: an.Filters = Depends(filters),
+                       user: dict = Depends(require("customers"))):
+    """Every item bought in one visit (invoice)."""
+    phone = an.phone_for_cid(cid)
+    if not phone:
+        raise HTTPException(404, "Customer not found")
+    return {"lines": an.customer_lines(phone, f, visit_key=key)}
 
 
 # ====================================================================== customer base

@@ -348,14 +348,25 @@ def customer_profile(phone: str, f: Filters, settings: dict) -> dict | None:
     if not summary:
         return None
     summary["cid"] = cid(phone)
-    directory = db.one(cur, """SELECT name, address, region, city, district, area, email, gender,
-        birth_date FROM customer_directory WHERE phone = ?""", [phone])
+    directory = db.one(cur, """SELECT name, first_name, last_name, address, region, city, district,
+        area, email, gender, birth_date, registered_at, registered_branch, pos_customer_id, source,
+        extra, updated_at FROM customer_directory WHERE phone = ?""", [phone])
+    # what the sales lines themselves say about the customer (all time, not only the period)
+    sales_info = db.one(cur, """SELECT
+        (array_agg(address ORDER BY invoice_date DESC) FILTER (WHERE address IS NOT NULL))[1] AS address,
+        array_remove(array_agg(DISTINCT name), NULL) AS names,
+        array_remove(array_agg(DISTINCT branch), NULL) AS branches,
+        array_remove(array_agg(DISTINCT invoice_type), NULL) AS sales_types,
+        min(invoice_date) AS first_purchase, max(invoice_date) AS last_purchase,
+        count(DISTINCT visit_key) AS all_time_visits, {} AS all_time_spend
+        FROM sales WHERE phone = ?""".format(R("sum(item_price)")), [phone])
     w, wp = f.where()
     base = f"FROM sales WHERE phone = ? AND {w}"
     bp = [phone] + wp
     return {
         "summary": summary,
         "directory": directory,
+        "sales_info": sales_info,
         "reference_date": ref,
         "monthly": db.rows(cur, f"""SELECT to_char(date_trunc('month', day), 'YYYY-MM') AS month,
             {R("sum(item_price)")} AS sales, count(DISTINCT visit_key) AS visits
@@ -367,12 +378,36 @@ def customer_profile(phone: str, f: Filters, settings: dict) -> dict | None:
         "branches": db.rows(cur, f"""SELECT coalesce(branch, '-') AS branch,
             {R("sum(item_price)")} AS sales, count(DISTINCT visit_key) AS visits
             {base} GROUP BY 1 ORDER BY sales DESC""", bp),
-        "visits": db.rows(cur, f"""SELECT visit_key, min(invoice_date) AS date,
+        "items": db.rows(cur, f"""SELECT coalesce(item_name, item_code, '-') AS item,
+            min(item_code) AS code, min(coalesce(item_category, material_group)) AS category,
+            sum(quantity) AS quantity, count(DISTINCT visit_key) AS times,
+            {R("sum(item_price)")} AS sales, {R("avg(item_price / nullif(quantity, 0))")} AS avg_price,
+            min(day) AS first_bought, max(day) AS last_bought
+            {base} GROUP BY 1 ORDER BY sales DESC LIMIT 1000""", bp),
+        "visits": db.rows(cur, f"""SELECT visit_key, min(invoice_no) AS invoice_no,
+            min(invoice_date) AS date,
             min(branch) AS branch, min(invoice_type) AS sales_type, count(*) AS lines,
             {R("sum(item_price)")} AS total,
             string_agg(DISTINCT coalesce(item_name, item_code), ' · ') AS items
             {base} GROUP BY visit_key ORDER BY date DESC LIMIT 200""", bp),
     }
+
+
+VISIT_LINE_COLUMNS = ["invoice_date", "branch", "invoice_no", "invoice_type", "item_code", "item_name",
+                      "item_category", "material_group", "quantity", "item_unit", "item_price"]
+
+
+def customer_lines(phone: str, f: Filters, visit_key: str | None = None, limit: int = 100000) -> list:
+    """The items bought: one row per invoice line (one visit, or all visits in the period)."""
+    w, wp = f.where()
+    cond, p = (f"phone = ? AND visit_key = ?", [phone, visit_key]) if visit_key else \
+        (f"phone = ? AND {w}", [phone] + wp)
+    rows = db.rows(db.cursor(), f"""SELECT {', '.join(VISIT_LINE_COLUMNS)},
+        round((item_price / nullif(quantity, 0))::numeric, 2)::float8 AS unit_price,
+        extra->>'discount' AS discount, extra->>'cashier' AS cashier,
+        extra->>'payment_method' AS payment
+        FROM sales WHERE {cond} ORDER BY invoice_date DESC, item_name LIMIT {int(limit)}""", p)
+    return rows
 
 
 # ====================================================================== summary

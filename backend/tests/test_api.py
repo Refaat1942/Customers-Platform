@@ -538,3 +538,16 @@ def test_bad_remembered_mapping_is_corrected(client):
     # and if someone still picks the time column as the date, the import stops with a clear message
     st = _commit_and_wait(client, up, "sales", "merge", {**m, "invoice_date": "Time", "invoice_time": None})
     assert st["status"] == "failed" and "does not contain dates" in st["message"]
+
+
+def test_customer_visit_items_and_data(client):
+    c = client.get("/api/customers", params={"q": "01222125888"}).json()["rows"][0]
+    prof = client.get(f"/api/customers/{c['cid']}").json()
+    assert prof["items"] and prof["sales_info"]["branches"] == ["CA28"]
+    v = prof["visits"][0]
+    assert v["invoice_no"] == "53558"
+    lines = client.get(f"/api/customers/{c['cid']}/visit", params={"key": v["visit_key"]}).json()["lines"]
+    assert {x["item_name"] for x in lines} == {"MUSTELA SKIN FRESHENER 200ML", "FLAMINGO FACIAL&BODY SHAVERS 3PCS", "DELIVERY FEES"}
+    assert sum(x["item_price"] for x in lines) == 925
+    r = client.get(f"/api/customers/{c['cid']}", params={"export": "true"})
+    assert r.status_code == 200 and r.content[:2] == b"PK"
