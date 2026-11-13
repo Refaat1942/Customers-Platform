@@ -24,6 +24,14 @@ type FileState = { name: string; size: number; sent: number; status: "waiting" |
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+/** "Column J — MUSTELA SKIN FRESHENER 200ML": show an example value next to every column. */
+function example(x: { sample: Record<string, any>[] }, c: string) {
+  const v = x.sample.map((r) => r[c]).find((v) => v !== null && v !== undefined && String(v).trim() !== "");
+  if (v === undefined) return c;
+  const txt = String(v).replace("T00:00:00", "");
+  return `${c} — ${txt.length > 40 ? txt.slice(0, 40) + "…" : txt}`;
+}
+
 /** Upload in 8 MB pieces. A failed piece is retried (up to 6 times, with back-off) and the
  *  upload always resumes from the number of bytes the server says it has. */
 async function chunkedUpload(file: File, onProgress: (sent: number) => void): Promise<string> {
@@ -210,6 +218,13 @@ export default function Import() {
                       </div>
                     </div>
                     <div className={clsx("text-xs mt-2", x.kind_reason === "unknown" ? "text-warn" : "text-good")}>{t(`imp.kindReason.${x.kind_reason}`)}</div>
+                    {k && x.columns.every((c) => /^Column [A-Z]+$/.test(c)) && (
+                      <div className="mt-2"><Notice kind="info">{t("imp.noHeader")}</Notice></div>
+                    )}
+                    {k === "sales" && (() => {
+                      const miss = ["item_name", "branch", "invoice_no", "quantity", "name"].filter((f) => !x.mappings.sales?.[f]);
+                      return miss.length > 0 && <div className="mt-2"><Notice kind="warning">{t("imp.missingFields", { fields: miss.map((f) => t(`imp.fields.${f}`)).join(" · ") })}</Notice></div>;
+                    })()}
                     {k === "sales" && x.text_dates && (
                       <div className={clsx("mt-3 rounded-lg border p-3 text-sm flex flex-wrap items-center gap-3", x.date_order_sure ? "border-line" : "border-amber-300 bg-amber-50")}>
                         <span className="font-medium">{t("imp.dateOrder")}</span>
@@ -238,7 +253,7 @@ export default function Import() {
                                   <select className={clsx("input", meta.required[k].includes(f) && !x.mappings[k]?.[f] && "border-bad", x.mappings[k]?.[f] && "bg-brand-soft/40")}
                                     value={x.mappings[k]?.[f] ?? ""} onChange={(e) => setField(i, k, f, e.target.value || null)}>
                                     <option value="">{t("imp.notMapped")}</option>
-                                    {x.columns.map((c) => <option key={c} value={c}>{c}</option>)}
+                                    {x.columns.map((c) => <option key={c} value={c}>{example(x, c)}</option>)}
                                   </select>
                                 </div>
                               ))}

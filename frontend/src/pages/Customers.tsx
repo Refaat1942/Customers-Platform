@@ -30,14 +30,15 @@ export default function Customers({ view }: { view: View }) {
   const status = sp.getAll("status");
   const segment = sp.getAll("segment");
   const churn = sp.getAll("churn");
+  const trend = sp.getAll("trend");
   const setList = (name: string, v: string[]) => {
     const n = new URLSearchParams(sp); n.delete(name); v.forEach((x) => n.append(name, x)); setSp(n, { replace: true });
   };
 
   useEffect(() => { const h = setTimeout(() => setQ(qText.trim()), 350); return () => clearTimeout(h); }, [qText]);
-  useEffect(() => setPage(1), [q, flag, status.join(), segment.join(), churn.join(), sort, desc, ...key]); // eslint-disable-line
+  useEffect(() => setPage(1), [q, flag, status.join(), segment.join(), churn.join(), trend.join(), sort, desc, ...key]); // eslint-disable-line
 
-  const query = { ...params, q, flag: flag || undefined, status, segment, churn, sort, desc, page, page_size: 50, view };
+  const query = { ...params, q, flag: flag || undefined, status, segment, churn, trend, sort, desc, page, page_size: 50, view };
   const res = useQuery({ queryKey: ["customers", query], queryFn: () => api.get("/customers", query), placeholderData: keepPreviousData });
 
   const c = (k: string, extra: Partial<Column<any>> = {}): Column<any> => ({ key: k, label: t(`col.${k}`), sortable: true, ...extra });
@@ -51,6 +52,7 @@ export default function Customers({ view }: { view: View }) {
       ...nameCol, c("district", { sortable: false }),
       c("total_spent", { num: true, render: (r) => fmtMoney(r.total_spent) }),
       c("visits", { num: true, render: (r) => fmtInt(r.visits) }),
+      { key: "trend", label: t("trend.col"), sortable: false, render: (r: any) => <TrendBadge t={t} r={r} /> },
       c("last_visit", { render: (r) => fmtDate(r.last_visit) }),
       c("days_since", { num: true, render: (r) => fmtInt(r.days_since) }),
       c("avg_per_visit", { num: true, render: (r) => fmtMoney(r.avg_per_visit) }),
@@ -109,6 +111,7 @@ export default function Customers({ view }: { view: View }) {
           </div>
           <MultiSelect label={t("col.status")} options={["active", "attention", "inactive"]} value={status} onChange={(v) => setList("status", v)} render={(s) => t(`status.${s}`)} />
           <MultiSelect label={t("col.segment")} options={SEGMENTS} value={segment} onChange={(v) => setList("segment", v)} render={(s) => t(`seg.${s}`)} />
+          <MultiSelect label={t("trend.col")} options={["growing", "stable", "declining", "stopped", "new", "back"]} value={trend} onChange={(v) => setList("trend", v)} render={(s) => t(`trend.${s}`)} />
           <MultiSelect label={t("col.churn_risk")} options={["high", "medium", "low"]} value={churn} onChange={(v) => setList("churn", v)} render={(s) => t(`risk.${s}`)} />
         </div>
         {res.error ? <ErrorBox error={res.error} onRetry={() => res.refetch()} /> : (
@@ -121,5 +124,15 @@ export default function Customers({ view }: { view: View }) {
         )}
       </div>
     </>
+  );
+}
+
+export function TrendBadge({ r, t }: { r: any; t: (k: string) => string }) {
+  const kind: Record<string, string> = { growing: "active", stable: "", declining: "attention", stopped: "inactive", new: "active", back: "active", none: "unknown" };
+  return (
+    <span className="inline-flex items-center gap-1.5">
+      <Badge kind={kind[r.trend] || undefined}>{t(`trend.${r.trend}`)}</Badge>
+      {r.trend_pct != null && <span className={r.trend_pct >= 0 ? "text-good text-xs num" : "text-bad text-xs num"}>{r.trend_pct >= 0 ? "+" : ""}{Math.round(r.trend_pct)}%</span>}
+    </span>
   );
 }

@@ -339,7 +339,8 @@ def get_insights(f: an.Filters = Depends(filters), export: bool = False, lang: s
 
 # ====================================================================== customers
 CUSTOMER_VIEWS = {
-    "customers": ["phone", "name", "branch", "district", "total_spent", "visits", "avg_per_visit",
+    "customers": ["phone", "name", "branch", "district", "total_spent", "visits", "trend", "trend_pct",
+                  "spend_90", "spend_prev_90", "avg_per_visit",
                   "max_invoice", "min_invoice", "items_count", "fav_item", "first_visit",
                   "last_visit", "days_since", "avg_days_between", "top_sales_type", "segment",
                   "status"],
@@ -361,6 +362,7 @@ def get_customers(
     status: list[str] = Query(default=[]),
     segment: list[str] = Query(default=[]),
     churn: list[str] = Query(default=[]),
+    trend: list[str] = Query(default=[]),
     flag: Literal["high_value", "loyal", "invalid_phone", "multi_branch", "due_soon",
                   "overdue"] | None = None,
     sort: str = "priority",
@@ -378,12 +380,12 @@ def get_customers(
 
     def run():
         return an.list_customers(f, db.get_settings(), q=q, status=status, flag=flag,
-                                 segment=segment, churn=churn, sort=sort, desc=desc, page=page,
-                                 page_size=page_size, limit_all=export)
+                                 segment=segment, churn=churn, trend=trend, sort=sort, desc=desc,
+                                 page=page, page_size=page_size, limit_all=export)
 
     res = run() if export else db.cached(
-        ("customers", f.key(), q, tuple(status), tuple(segment), tuple(churn), flag, sort, desc,
-         page, page_size), run)
+        ("customers", f.key(), q, tuple(status), tuple(segment), tuple(churn), tuple(trend), flag,
+         sort, desc, page, page_size), run)
     res = {**res, "rows": [dict(r) for r in res["rows"]]}
     for r in res["rows"]:
         r["action"] = ex.ACTIONS.get(r["status"])
@@ -452,6 +454,26 @@ def get_customer_visit(cid: str, key: str, f: an.Filters = Depends(filters),
     if not phone:
         raise HTTPException(404, "Customer not found")
     return {"lines": an.customer_lines(phone, f, visit_key=key)}
+
+
+# ====================================================================== refill reminders
+@router.get("/refills")
+def get_refills(f: an.Filters = Depends(filters), q: str | None = None,
+                status: list[str] = Query(default=[]), sort: str = "due_date", desc: bool = False,
+                page: int = Query(1, ge=1), page_size: int = Query(50, ge=1, le=500),
+                export: bool = False, lang: str = "en",
+                user: dict = Depends(require("recommendations"))):
+    if export:
+        need_export(user)
+    res = an.refills(f, db.get_settings(), q=q, status=status, sort=sort, desc=desc, page=page,
+                     page_size=page_size, limit_all=export)
+    protect(res["rows"], user)
+    if not export:
+        return res
+    audit(user, "export", f"refill reminders ({res['total']}) {filter_text(f)}")
+    sheet = "تذكير إعادة الصرف" if lang == "ar" else "Refill reminders"
+    return xlsx_response(ex.workbook([(sheet, ex.frame(res["rows"], an.REFILL_COLUMNS, lang))], lang,
+                                     sheet, filter_meta(f, lang)), "refill_reminders.xlsx")
 
 
 # ====================================================================== customer base

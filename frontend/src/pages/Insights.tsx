@@ -71,6 +71,23 @@ export default function Insights() {
             </div>
           )}
 
+          {d.trend?.length > 0 && (
+            <Card title={t("trend.title")}>
+              <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-7 gap-3">
+                {["growing", "stable", "declining", "stopped", "new", "back", "none"].map((k) => {
+                  const r = d.trend.find((x: any) => x.trend === k);
+                  return (
+                    <button key={k} onClick={() => nav(`/customers?trend=${k}`)} className="text-start rounded-lg border border-line p-3 hover:border-brand hover:bg-brand-soft cursor-pointer">
+                      <div className="text-xs text-muted">{t(`trend.${k}`)}</div>
+                      <div className="text-xl font-bold num">{fmtInt(r?.customers ?? 0)}</div>
+                      {r && (k === "declining" || k === "stopped") && <div className="text-xs text-bad num">{fmtMoney((r.spend_prev_90 ?? 0) - (r.spend_90 ?? 0))} ↓</div>}
+                    </button>
+                  );
+                })}
+              </div>
+            </Card>
+          )}
+
           <Card title={t("ins.rfm")} help={t("ins.rfmHelp")}>
             <div className="grid sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-3">
               {d.rfm.map((s: any) => (

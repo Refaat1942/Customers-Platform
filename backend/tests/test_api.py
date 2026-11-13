@@ -566,3 +566,30 @@ def test_headerless_pos_export(client):
     assert (m["item_unit"], m["quantity"], m["item_price"], m["item_category"]) == ("Column K", "Column L", "Column M", "Column N")
     st = _commit_and_wait(client, up, "sales", "merge", m)
     assert st["status"] == "done" and st["rows_read"] == 6, st
+
+
+def test_refills_and_trend(client):
+    import pandas as pd
+    from datetime import datetime, timedelta
+    end = datetime(2026, 10, 30, 11)
+    rows = []
+    for k in range(5):  # insulin every 30 days, last time 34 days before the end -> overdue
+        d = end - timedelta(days=34 + 30 * k)
+        rows.append({"Mobile": "01066600001", "Date": d, "Item Name": "INSULIN PEN", "Qty": 1, "Amount": 450.0, "Branch": "Maadi"})
+        rows.append({"Mobile": "01066600001", "Date": d, "Item Name": "DELIVERY FEES", "Qty": 1, "Amount": 30.0, "Branch": "Maadi"})
+    buf = io.BytesIO()
+    pd.DataFrame(rows).to_excel(buf, index=False)
+    up = upload(client, buf.getvalue(), "refills.xlsx")
+    st = _commit_and_wait(client, up, "sales", "merge", up["mappings"]["sales"])
+    assert st["status"] == "done"
+    r = client.get("/api/refills", params={"q": "01066600001", "status": ["due_soon", "overdue", "lapsed", "ok"],
+                                           "date_to": "2026-10-30"}).json()
+    items = {x["item"]: x for x in r["rows"]}
+    assert "DELIVERY FEES" not in items                 # services never count
+    ins = items["INSULIN PEN"]
+    assert ins["cycle_days"] == 30 and ins["refill_status"] == "overdue" and ins["days_late"] == 4
+    c = client.get("/api/customers", params={"q": "01066600001", "date_to": "2026-10-30"}).json()["rows"][0]
+    assert c["trend"] in ("stable", "declining", "growing", "stopped", "back", "new", "none")
+    prof = client.get(f"/api/customers/{c['cid']}", params={"date_to": "2026-10-30"}).json()
+    assert prof["refills"] and prof["habits"]["items_per_visit"] == 2
+    assert client.get("/api/refills", params={"export": "true"}).content[:2] == b"PK"

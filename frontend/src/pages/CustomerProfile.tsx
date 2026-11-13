@@ -10,6 +10,7 @@ import { fmtDate, fmtInt, fmtMoney, fmtNum } from "../lib/format";
 import DataTable from "../components/DataTable";
 import { Badge, Card, Empty, ErrorBox, ExportButton, Kpi, PageHeader, PrintButton, Spinner, Tabs } from "../components/ui";
 import { RankBars, TrendChart } from "../components/charts";
+import { TrendBadge } from "./Customers";
 
 type Tab = "purchases" | "data";
 
@@ -65,7 +66,8 @@ function Purchases({ d, cid, params }: { d: any; cid: string; params: any }) {
   return (
     <div className="space-y-5">
       <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-6 gap-4">
-        <Kpi label={t("col.total_spent")} value={fmtMoney(s.total_spent)} />
+        <Kpi label={t("col.total_spent")} value={fmtMoney(s.total_spent)}
+          sub={`${t("trend.col")}: ${t(`trend.${s.trend}`)}${s.trend_pct != null ? ` (${s.trend_pct >= 0 ? "+" : ""}${Math.round(s.trend_pct)}%)` : ""}`} />
         <Kpi label={t("col.visits")} value={fmtInt(s.visits)} sub={`${fmtInt(s.items_count)} ${t("prof.differentProducts")}`} />
         <Kpi label={t("col.avg_per_visit")} value={fmtMoney(s.avg_per_visit)}
           sub={`${t("col.max_invoice")}: ${fmtMoney(s.max_invoice)} · ${t("col.min_invoice")}: ${fmtMoney(s.min_invoice)}`} />
@@ -74,6 +76,23 @@ function Purchases({ d, cid, params }: { d: any; cid: string; params: any }) {
         <Kpi label={t("col.expected_next")} value={fmtDate(s.expected_next)}
           sub={s.overdue_days > 0 ? `${fmtInt(s.overdue_days)} ${t("col.overdue_days")}` : undefined} />
       </div>
+
+      {d.refills?.length > 0 && (
+        <Card title={t("refill.title")} help={t("refill.help")}>
+          <DataTable rows={d.refills} maxHeight={320} columns={[
+            { key: "item", label: t("refill.col.item"), className: "max-w-72 truncate font-medium" },
+            { key: "cycle_days", label: t("refill.col.cycle_days"), num: true },
+            { key: "last_bought", label: t("refill.col.last_bought"), render: (r) => fmtDate(r.last_bought) },
+            { key: "due_date", label: t("refill.col.due_date"), render: (r) => <b>{fmtDate(r.due_date)}</b> },
+            { key: "days_late", label: t("refill.col.days_late"), num: true, render: (r) => (r.days_late > 0 ? <span className="text-bad font-semibold">{fmtInt(r.days_late)}</span> : fmtInt(r.days_late)) },
+            { key: "refill_status", label: t("refill.col.refill_status"), render: (r) => <Badge kind={({ due_soon: "attention", overdue: "inactive", lapsed: "unknown", ok: "active" } as any)[r.refill_status]}>{t(`refill.status.${r.refill_status}`)}</Badge> },
+            { key: "avg_qty", label: t("refill.col.avg_qty"), num: true, render: (r) => fmtNum(r.avg_qty) },
+            { key: "avg_amount", label: t("refill.col.avg_amount"), num: true, render: (r) => fmtMoney(r.avg_amount) },
+          ]} />
+        </Card>
+      )}
+
+      {d.habits && <Habits h={d.habits} trend={s} />}
 
       <div className="grid lg:grid-cols-2 gap-5">
         <Card title={t("cust.monthlySpend")}><TrendChart data={d.monthly} x="month" y="sales" name={t("col.sales")} height={220} /></Card>
@@ -239,5 +258,34 @@ function CustomerData({ d }: { d: any }) {
         </Card>
       )}
     </div>
+  );
+}
+
+function Habits({ h, trend }: { h: any; trend: any }) {
+  const { t } = useTranslation();
+  const days = t("days", { returnObjects: true }) as string[];
+  const cells: [string, any][] = [
+    [t("habits.day"), h.fav_dow ? days[h.fav_dow - 1] : "–"],
+    [t("habits.hour"), h.fav_hour != null ? `${String(h.fav_hour).padStart(2, "0")}:00` : "–"],
+    [t("habits.itemsPerVisit"), fmtNum(h.items_per_visit)],
+    [t("habits.delivery"), h.delivery_pct != null ? `${h.delivery_pct}%` : "–"],
+    [t("habits.returns"), fmtInt(h.returns)],
+    [t("habits.branch"), h.fav_branch ?? "–"],
+  ];
+  return (
+    <Card title={t("habits.title")}>
+      <div className="grid sm:grid-cols-3 lg:grid-cols-7 gap-5 text-sm">
+        {cells.map(([l, v]) => <div key={l}><div className="text-muted text-xs">{l}</div><div className="font-semibold">{v}</div></div>)}
+        <div><div className="text-muted text-xs">{t("trend.col")}</div><div className="mt-0.5"><TrendBadge r={trend} t={t} /></div></div>
+      </div>
+      {h.categories?.length > 0 && (
+        <div className="mt-4">
+          <div className="text-xs text-muted mb-2">{t("habits.categories")}</div>
+          <div className="flex flex-wrap gap-2">
+            {h.categories.map((c: any) => <span key={c.category} className="rounded-full bg-surface border border-line px-3 py-1 text-xs">{c.category} · <b className="num">{fmtMoney(c.sales)}</b></span>)}
+          </div>
+        </div>
+      )}
+    </Card>
   );
 }

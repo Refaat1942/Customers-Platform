@@ -491,6 +491,9 @@ def preview(path: Path, sheet: str | None = None) -> dict:
     for n in targets:
         info = analyse_sheet(path, n)
         info["rows"] = totals.get(n) if n else None
+        if info["rows"] is not None and info["columns"] and \
+                all(re.fullmatch(r"Column [A-Z]+", c) for c in info["columns"]):
+            info["rows"] += 1  # no header row: the first row is data too
         sheets.append(info)
     first = next((x for x in sheets if x["kind"] in ("sales", "customers")), sheets[0])
     return {

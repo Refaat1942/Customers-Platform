@@ -48,6 +48,18 @@ LABELS = {
     "season": ("Season", "الموسم"),
     "item": ("Item", "الصنف"),
     "metric": ("Metric", "المؤشر"),
+    "trend": ("Spend Trend", "اتجاه الإنفاق"),
+    "trend_pct": ("Trend %", "التغير %"),
+    "spend_90": ("Spend Last 90 Days", "إنفاق آخر 90 يوم"),
+    "spend_prev_90": ("Spend Previous 90 Days", "إنفاق الـ 90 يوم السابقة"),
+    "purchases": ("Times Bought", "مرات الشراء"),
+    "cycle_days": ("Refill Every (days)", "يعيد الشراء كل (يوم)"),
+    "due_date": ("Due Date", "موعد إعادة الشراء"),
+    "days_late": ("Days Late", "أيام التأخير"),
+    "refill_status": ("Refill Status", "حالة إعادة الشراء"),
+    "avg_qty": ("Usual Qty", "الكمية المعتادة"),
+    "avg_amount": ("Usual Amount", "القيمة المعتادة"),
+    "lifetime_amount": ("Total Spent on Item", "إجمالي إنفاقه على الصنف"),
     "unit_price": ("Unit Price", "سعر الوحدة"),
     "first_bought": ("First Bought", "أول شراء"),
     "last_bought": ("Last Bought", "آخر شراء"),
@@ -120,6 +132,16 @@ VALUES = {
     "at_risk": ("At Risk", "معرضون للفقد"),
     "hibernating": ("Hibernating", "خاملون"),
     "lost": ("Lost", "مفقودون"),
+    "growing": ("Growing", "متزايد"),
+    "stable": ("Stable", "ثابت"),
+    "declining": ("Declining", "متراجع"),
+    "stopped": ("Stopped", "توقف"),
+    "back": ("Came back", "عاد"),
+    "none": ("No recent spend", "لا إنفاق حديث"),
+    "due_soon": ("Due this week", "مستحق هذا الأسبوع"),
+    "overdue": ("Overdue", "متأخر"),
+    "lapsed": ("Lapsed", "انقطع"),
+    "ok": ("Not due yet", "لم يحن موعده"),
     "high": ("High", "مرتفع"),
     "medium": ("Medium", "متوسط"),
     "low": ("Low", "منخفض"),
@@ -135,7 +157,7 @@ ACTIONS = {"active": "keep_engaged", "attention": "send_offer", "inactive": "cal
            "unknown": "call_customer"}
 
 TRANSLATED_COLS = {"status", "action", "high_value", "loyal", "phone_valid", "top_season", "season", "bought",
-                   "segment", "churn_risk"}
+                   "segment", "churn_risk", "trend", "refill_status"}
 
 
 def label(key: str, lang: str) -> str:
