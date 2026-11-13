@@ -1,7 +1,9 @@
 """Excel/CSV import: read -> map columns -> clean -> store in `sales`."""
 
+import csv
 import hashlib
 import json
+import re
 import shutil
 import threading
 import zipfile
@@ -75,6 +77,11 @@ def _csv_reader(path: Path, nrows=None, chunksize=None):
     with path.open(encoding=enc, errors="replace") as fh:
         head = fh.readline()
     sep = max([",", ";", "\t", "|"], key=head.count)
+    first = next(csv.reader([head], delimiter=sep), [])
+    if looks_like_data_row(first):  # no header row
+        return pd.read_csv(path, nrows=nrows, chunksize=chunksize, dtype=object, encoding=enc,
+                           sep=sep, encoding_errors="replace", header=None,
+                           names=generic_header(len(first)))
     return pd.read_csv(path, nrows=nrows, chunksize=chunksize, dtype=object, encoding=enc,
                        sep=sep, encoding_errors="replace")
 
@@ -90,6 +97,42 @@ def _clean_header(cols) -> list[str]:
             seen[c] = 0
         out.append(c)
     return out
+
+
+def _excel_letter(i: int) -> str:
+    s = ""
+    i += 1
+    while i:
+        i, r = divmod(i - 1, 26)
+        s = chr(65 + r) + s
+    return s
+
+
+def generic_header(n: int) -> list[str]:
+    return [f"Column {_excel_letter(i)}" for i in range(n)]
+
+
+def looks_like_data_row(row) -> bool:
+    """True when the first row is data, not column titles (files exported without a header row):
+    it contains a mobile number, a date/time, or several numbers."""
+    hits = 0
+    for v in row:
+        if v is None or v == "":
+            continue
+        if isinstance(v, (datetime, date, dt_time, timedelta)):
+            return True
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            hits += 1
+            continue
+        t = str(v).strip()
+        digits = "".join(ch for ch in t if ch.isdigit())
+        if is_valid_egy_mobile(normalize_egy_phone(t)) and len(digits) >= 9:
+            return True
+        if re.match(r"^\d{1,4}[/.\-]\d{1,2}[/.\-]\d{2,4}", t) or re.match(_TIME_ONLY, t):
+            return True
+        if re.fullmatch(r"[\d.,]+", t):
+            hits += 1
+    return hits >= 2
 
 
 def iter_chunks(path: Path, sheet: str | None = None, chunk_rows=CHUNK_ROWS):
@@ -109,13 +152,17 @@ def iter_chunks(path: Path, sheet: str | None = None, chunk_rows=CHUNK_ROWS):
     total = max(sh.total_height - 1, 0)
     it = sh.iter_rows()
     header = None
-    for row in it:  # first non-empty row is the header
+    buf = []
+    for row in it:  # first non-empty row is the header - unless it is already data
         if any(v not in (None, "") for v in row):
-            header = _clean_header(row)
+            if looks_like_data_row(row):
+                header = generic_header(len(row))
+                buf.append(row)
+            else:
+                header = _clean_header(row)
             break
     if header is None:
         return
-    buf = []
     for row in it:
         buf.append(row)
         if len(buf) >= chunk_rows:
@@ -137,7 +184,10 @@ def read_file(path: Path, nrows=None, sheet: str | None = None) -> pd.DataFrame:
     data = [r for r in data if any(v not in (None, "") for v in r)]
     if not data:
         return pd.DataFrame()
-    df = pd.DataFrame(data[1:], columns=_clean_header(data[0]))
+    if looks_like_data_row(data[0]):  # no header row in the file
+        df = pd.DataFrame(data, columns=generic_header(max(len(r) for r in data)))
+    else:
+        df = pd.DataFrame(data[1:], columns=_clean_header(data[0]))
     return df.head(nrows) if nrows else df
 
 
@@ -231,6 +281,100 @@ def smart_sales_mapping(df: pd.DataFrame, mapping: dict, prof: dict) -> dict:
         if cands and max(cands)[0] > 0:
             m["item_price"] = max(cands)[1]
     used.discard(None)
+    return infer_fields(df, m, prof)
+
+
+UNIT_WORDS = {"EA", "PAK", "PACK", "PCK", "BOX", "BX", "PC", "PCS", "BTL", "BOTTLE", "TAB", "TABS",
+              "STR", "STRIP", "KG", "G", "GM", "ML", "L", "LTR", "CAN", "TUBE", "SACHET", "AMP",
+              "VIAL", "UNIT", "CRT", "CTN", "DZ", "PR", "علبة", "شريط", "قطعة", "زجاجة"}
+TYPE_WORDS = ("deliver", "cash", "insur", "credit", "return", "takeaway", "pick", "online", "walk",
+              "contract", "توصيل", "نقد", "تأمين", "آجل", "مرتجع")
+
+
+def infer_fields(df: pd.DataFrame, m: dict, prof: dict) -> dict:
+    """Fill fields that have no column yet by looking at the VALUES (needed for files without
+    a header row, or with unusual titles). Never changes a column that is already chosen."""
+    m = dict(m)
+    used = {v for v in m.values() if v}
+    free = [c for c in df.columns if c not in used and prof.get(c, {}).get("n")]
+    phone = m.get("phone")
+    stats = {}
+    for c in free:
+        s = df[c].dropna()
+        s = s[s.astype(str).str.strip() != ""]
+        txt = s.astype(str).str.strip()
+        num = pd.to_numeric(s, errors="coerce")
+        n = len(s)
+        same_prev = (df[c].astype(str) == df[c].astype(str).shift()).mean()
+        const_per_phone = None
+        if phone in df.columns:
+            g = df[[phone, c]].dropna().astype(str).groupby(phone)[c].nunique()
+            const_per_phone = float((g <= 1).mean()) if len(g) else None
+        stats[c] = {
+            "n": n, "num": float(num.notna().mean()), "int": float((num.dropna() % 1 == 0).mean()) if num.notna().any() else 0,
+            "median": float(num.median()) if num.notna().any() else None,
+            "uniq": s.nunique() / n, "distinct": int(s.nunique()), "len": float(txt.str.len().mean()),
+            "alpha": float(txt.str.contains(r"[A-Za-z\u0600-\u06FF]").mean()),
+            "digit": float(txt.str.contains(r"\d").mean()),
+            "time": float(s.map(lambda v: isinstance(v, dt_time) or bool(re.match(_TIME_ONLY, str(v)))).mean()),
+            "unit": float(txt.str.upper().isin(UNIT_WORDS).mean()),
+            "type": float(txt.str.lower().map(lambda v: any(w in v for w in TYPE_WORDS)).mean()),
+            "same_prev": float(same_prev), "const_phone": const_per_phone,
+            "len_std": float(txt.str.len().std() or 0) if n > 1 else 0.0,
+            "decimal": float((num.dropna() % 1 != 0).mean()) if num.notna().any() else 0,
+        }
+
+    def take(field, cands):
+        cands = [c for c in cands if c not in used]
+        if not m.get(field) and cands:
+            m[field] = cands[0]
+            used.add(cands[0])
+
+    by = lambda key, rev=True: sorted(stats, key=lambda c: stats[c][key] or 0, reverse=rev)  # noqa: E731
+    st = stats
+    take("invoice_time", [c for c in by("time") if st[c]["time"] >= 0.8])
+    take("item_unit", [c for c in by("unit") if st[c]["unit"] >= 0.6])
+    take("invoice_type", [c for c in by("type") if st[c]["type"] >= 0.6 and st[c]["distinct"] <= 15])
+    # quantity: small whole numbers
+    take("quantity", [c for c in by("num") if st[c]["num"] >= 0.95 and st[c]["int"] >= 0.9
+                      and st[c]["median"] is not None and 0 < st[c]["median"] <= 10])
+    # invoice number: same value on consecutive lines (one invoice = several lines), not a phone
+    take("invoice_no", [c for c in by("same_prev") if st[c]["same_prev"] >= 0.2 and st[c]["uniq"] < 0.9
+                        and st[c]["digit"] >= 0.8 and st[c]["len"] <= 20 and st[c]["distinct"] > 1
+                        and prof[c]["phone"] < 0.3 and st[c]["num"] >= 0.5])
+    # amount: numbers of varying size (codes have a fixed number of digits)
+    if not m.get("item_price"):
+        amounts = [c for c in st if c not in used and st[c]["num"] >= 0.9 and prof[c]["phone"] < 0.3
+                   and prof[c]["date"] < 0.3 and (st[c]["median"] or 0) > 0
+                   and (st[c]["decimal"] > 0 or st[c]["len_std"] > 0.3 or (st[c]["median"] or 0) < 1000)]
+        # decimals first; then the smaller typical value (product codes are big numbers)
+        amounts.sort(key=lambda c: (0 if st[c]["decimal"] > 0 else 1, st[c]["median"] or 0))
+        take("item_price", amounts)
+    # branch: a few short codes (often letters + digits like CA28), same for the whole invoice
+    take("branch", [c for c in by("distinct", rev=False) if st[c]["distinct"] <= 60
+                    and (st[c]["uniq"] < 0.2 or st[c]["distinct"] <= 5) and st[c]["len"] <= 25
+                    and st[c]["unit"] < 0.3 and st[c]["type"] < 0.3 and st[c]["num"] < 0.5
+                    and (st[c]["digit"] >= 0.5 or st[c]["len"] <= 12)
+                    and (st[c]["const_phone"] or 0) >= 0.8])
+    # customer name / address: text that stays the same for the same phone
+    texts = [c for c in st if st[c]["alpha"] >= 0.8 and st[c]["num"] < 0.2]
+    take("address", [c for c in sorted(texts, key=lambda c: -st[c]["len"])
+                     if st[c]["len"] >= 25 and (st[c]["const_phone"] or 0) >= 0.8])
+    take("name", [c for c in texts if 2 <= st[c]["len"] < 40 and (st[c]["const_phone"] or 0) >= 0.9
+                  and st[c]["uniq"] >= 0.02 and st[c]["unit"] < 0.3 and st[c]["type"] < 0.3
+                  and st[c]["digit"] < 0.2])
+    # product name: text that changes from line to line
+    take("item_name", [c for c in sorted(texts, key=lambda c: -st[c]["uniq"])
+                       if st[c]["len"] >= 4 and st[c]["uniq"] >= 0.05 and st[c]["unit"] < 0.3
+                       and st[c]["type"] < 0.3 and (st[c]["const_phone"] is None or st[c]["const_phone"] < 0.9
+                                                    or st[c]["uniq"] > 0.5)])
+    # product code: codes that vary per line
+    take("item_code", [c for c in by("uniq") if st[c]["digit"] >= 0.8 and 2 <= st[c]["len"] <= 15
+                       and st[c]["uniq"] >= 0.05 and prof[c]["phone"] < 0.3 and prof[c]["date"] < 0.3
+                       and st[c]["decimal"] == 0])
+    # category: short codes / words with few values
+    take("item_category", [c for c in by("distinct", rev=False) if st[c]["distinct"] <= 300 and st[c]["len"] <= 30
+                           and st[c]["alpha"] >= 0.8 and st[c]["unit"] < 0.3 and st[c]["type"] < 0.3])
     return m
 
 

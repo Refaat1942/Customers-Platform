@@ -551,3 +551,18 @@ def test_customer_visit_items_and_data(client):
     assert sum(x["item_price"] for x in lines) == 925
     r = client.get(f"/api/customers/{c['cid']}", params={"export": "true"})
     assert r.status_code == 200 and r.content[:2] == b"PK"
+
+
+def test_headerless_pos_export(client):
+    """POS export without a header row: every field recognised from the values, no row lost."""
+    from pathlib import Path
+    data = (Path(__file__).parent / "headerless_pos.xlsx").read_bytes()
+    up = upload(client, data, "Car 2024 All.xlsx")
+    sh = up["sheets_info"][0]
+    assert sh["kind"] == "sales"
+    m = sh["mappings"]["sales"]
+    assert (m["branch"], m["invoice_no"], m["name"], m["phone"]) == ("Column A", "Column B", "Column C", "Column D")
+    assert (m["invoice_date"], m["invoice_time"], m["item_code"], m["item_name"]) == ("Column G", "Column H", "Column I", "Column J")
+    assert (m["item_unit"], m["quantity"], m["item_price"], m["item_category"]) == ("Column K", "Column L", "Column M", "Column N")
+    st = _commit_and_wait(client, up, "sales", "merge", m)
+    assert st["status"] == "done" and st["rows_read"] == 6, st

@@ -115,7 +115,7 @@ CUSTOMER_COLUMNS = [
     "last_visit", "visit_days", "branches_count", "top_sales_type", "top_material",
     "top_category", "top_season", "phone_valid", "avg_per_visit", "avg_days_between",
     "days_since", "status", "high_value", "loyal", "r_score", "f_score", "m_score", "segment",
-    "expected_next", "overdue_days", "churn_risk",
+    "expected_next", "overdue_days", "churn_risk", "spend_90", "spend_prev_90", "trend", "trend_pct",
 ]
 
 CUSTOMER_SORTS = {
@@ -126,6 +126,7 @@ CUSTOMER_SORTS = {
     "avg_days_between": "avg_days_between", "overdue_days": "overdue_days",
     "expected_next": "expected_next", "segment": "segment", "max_invoice": "max_invoice",
     "min_invoice": "min_invoice", "items_count": "items_count", "quantity": "quantity",
+    "trend_pct": "trend_pct", "spend_90": "spend_90",
 }
 
 SEGMENTS = ["champions", "loyal", "potential", "new", "promising", "cant_lose", "at_risk",
@@ -162,7 +163,10 @@ def customers_cte(f: Filters, settings: dict, ref: date | None) -> tuple[str, li
         mode() WITHIN GROUP (ORDER BY season) AS top_season,
         mode() WITHIN GROUP (ORDER BY coalesce(item_name, item_code)) AS fav_item,
         count(DISTINCT coalesce(item_name, item_code)) AS items_count,
-        bool_or(phone_valid) AS phone_valid
+        bool_or(phone_valid) AS phone_valid,
+        {R("coalesce(sum(item_price) FILTER (WHERE day > ?::date - 90), 0)")} AS spend_90,
+        {R("coalesce(sum(item_price) FILTER (WHERE day > ?::date - 180 AND day <= ?::date - 90), 0)")}
+          AS spend_prev_90
       FROM sales WHERE phone IS NOT NULL AND {w}
       GROUP BY phone
     ),
@@ -172,7 +176,8 @@ def customers_cte(f: Filters, settings: dict, ref: date | None) -> tuple[str, li
         CASE WHEN visit_days > 1
              THEN round(((last_visit - first_visit)::numeric / (visit_days - 1)), 1)::float8
         END AS avg_days_between,
-        (?::date - last_visit) AS days_since
+        (?::date - last_visit) AS days_since,
+        (?::date - first_visit) AS customer_age_days
       FROM base JOIN invs USING (phone)
     ),
     scored AS (
@@ -210,14 +215,24 @@ def customers_cte(f: Filters, settings: dict, ref: date | None) -> tuple[str, li
                CASE WHEN days_since > ? THEN 'high' WHEN days_since > ? THEN 'medium' ELSE 'low' END
              WHEN days_since > 2 * greatest(avg_days_between, 7) THEN 'high'
              WHEN days_since > 1.5 * greatest(avg_days_between, 7) THEN 'medium'
-             ELSE 'low' END AS churn_risk
+             ELSE 'low' END AS churn_risk,
+        -- spend trend: last 90 days vs the 90 days before (to the end of the selected period)
+        CASE WHEN spend_90 = 0 AND spend_prev_90 = 0 THEN 'none'
+             WHEN spend_prev_90 = 0 AND customer_age_days <= 90 THEN 'new'
+             WHEN spend_prev_90 = 0 THEN 'back'
+             WHEN spend_90 = 0 THEN 'stopped'
+             WHEN spend_90 >= spend_prev_90 * 1.25 THEN 'growing'
+             WHEN spend_90 <= spend_prev_90 * 0.75 THEN 'declining'
+             ELSE 'stable' END AS trend,
+        round((100 * (spend_90 - spend_prev_90) / nullif(spend_prev_90, 0))::numeric, 1)::float8
+          AS trend_pct
       FROM scored
     )"""
     s = settings
     tail = [s["active_days"], s["attention_days"], s["active_days"], s["attention_days"],
             s["high_value_spend"], s["loyalty_spend"], s["loyalty_visits"],
             s["attention_days"], s["active_days"]]
-    return sql, params + params + [ref] + tail
+    return sql, params + [ref, ref, ref] + params + [ref, ref] + tail
 
 
 def phone_query(q: str) -> str | None:
@@ -236,12 +251,14 @@ def phone_query(q: str) -> str | None:
 _cc_lock = threading.Lock()
 _cc_key_locks: dict[str, threading.Lock] = {}
 _cc_tables: "OrderedDict[str, tuple[int, object]]" = OrderedDict()
-CC_KEEP = 8
+CC_KEEP = 12
 
 
-def customer_table(f: Filters, settings: dict) -> tuple[str, object]:
+def _materialize(prefix: str, key, build) -> tuple[str, object]:
+    """Create (once per data version + key) an UNLOGGED table from `build(cur) -> (sql, params, info)`;
+    later requests read the ready table. Old versions / least recently used tables are dropped."""
     ver = db._version
-    name = "cc_" + hashlib.sha1(repr((ver, f.key())).encode()).hexdigest()[:16]
+    name = prefix + hashlib.sha1(repr((ver, key)).encode()).hexdigest()[:16]
     with _cc_lock:
         if name in _cc_tables:
             _cc_tables.move_to_end(name)
@@ -252,14 +269,13 @@ def customer_table(f: Filters, settings: dict) -> tuple[str, object]:
             if name in _cc_tables:
                 return name, _cc_tables[name][1]
         cur = db.cursor()
-        ref = reference_date(cur, f)
-        cte, params = customers_cte(f, settings, ref)
+        sql, params, info = build(cur)
         cur.execute(f"DROP TABLE IF EXISTS {name}")
-        cur.execute(f"CREATE UNLOGGED TABLE {name} AS WITH {cte} SELECT * FROM cust", params)
+        cur.execute(f"CREATE UNLOGGED TABLE {name} AS {sql}", params)
         cur.execute(f"CREATE INDEX ON {name} (phone)")
         cur.execute(f"ANALYZE {name}")
         with _cc_lock:
-            _cc_tables[name] = (ver, ref)
+            _cc_tables[name] = (ver, info)
             old = [n for n, (v, _) in _cc_tables.items() if v != ver]
             old += [n for n in list(_cc_tables)[:-CC_KEEP] if n not in old]
             for n in old:
@@ -270,19 +286,31 @@ def customer_table(f: Filters, settings: dict) -> tuple[str, object]:
                 cur.execute(f"DROP TABLE IF EXISTS {n}")
             except Exception:  # noqa: BLE001 - may still be read by a slow request
                 pass
-        return name, ref
+        return name, info
+
+
+def customer_table(f: Filters, settings: dict) -> tuple[str, object]:
+    def build(cur):
+        ref = reference_date(cur, f)
+        cte, params = customers_cte(f, settings, ref)
+        return f"WITH {cte} SELECT * FROM cust", params, ref
+    return _materialize("cc_", ("cust", f.key()), build)
 
 
 def drop_customer_tables():
     cur = db.cursor()
-    for (n,) in cur.execute("SELECT tablename FROM pg_tables WHERE tablename LIKE 'cc\\_%'").fetchall():
+    for (n,) in cur.execute("SELECT tablename FROM pg_tables WHERE tablename LIKE 'cc\\_%' "
+                            "OR tablename LIKE 'rf\\_%'").fetchall():
         cur.execute(f"DROP TABLE IF EXISTS {n}")
     with _cc_lock:
         _cc_tables.clear()
 
 
-def _customer_where(q=None, status=None, flag=None, segment=None, churn=None, ref=None):
+def _customer_where(q=None, status=None, flag=None, segment=None, churn=None, ref=None, trend=None):
     conds, params = ["TRUE"], []
+    if trend:
+        conds.append("trend = ANY(?)")
+        params.append(list(trend))
     if q:
         digits = phone_query(q)
         if digits:
@@ -317,11 +345,11 @@ def _customer_where(q=None, status=None, flag=None, segment=None, churn=None, re
 
 
 def list_customers(f: Filters, settings: dict, *, q=None, status=None, flag=None, segment=None,
-                   churn=None, sort="priority", desc=True, page=1, page_size=50,
+                   churn=None, trend=None, sort="priority", desc=True, page=1, page_size=50,
                    limit_all=False) -> dict:
     table, ref = customer_table(f, settings)
     cur = db.cursor()
-    where, wp = _customer_where(q, status, flag, segment, churn, ref)
+    where, wp = _customer_where(q, status, flag, segment, churn, ref, trend)
     order = CUSTOMER_SORTS.get(sort, CUSTOMER_SORTS["priority"])
     if sort != "priority":
         order = f"{order} {'DESC' if desc else 'ASC'} NULLS LAST, phone"
@@ -367,6 +395,8 @@ def customer_profile(phone: str, f: Filters, settings: dict) -> dict | None:
         "summary": summary,
         "directory": directory,
         "sales_info": sales_info,
+        "refills": customer_refills(phone, f, settings),
+        "habits": customer_habits(phone, f),
         "reference_date": ref,
         "monthly": db.rows(cur, f"""SELECT to_char(date_trunc('month', day), 'YYYY-MM') AS month,
             {R("sum(item_price)")} AS sales, count(DISTINCT visit_key) AS visits
@@ -528,6 +558,8 @@ def _customer_health(f: Filters, settings: dict, ref) -> dict:
             count(*) FILTER (WHERE NOT EXISTS (SELECT 1 FROM {table} c WHERE c.phone = d.phone))
               AS never_bought
             FROM customer_directory d""")
+        trend = db.rows(cur, f"""SELECT trend, count(*) AS customers, {R("sum(spend_90)")} AS spend_90,
+            {R("sum(spend_prev_90)")} AS spend_prev_90 FROM {table} GROUP BY trend""")
         due = db.one(cur, f"""SELECT
             count(*) FILTER (WHERE expected_next BETWEEN ?::date AND ?::date + 7) AS due_soon,
             count(*) FILTER (WHERE overdue_days > 0) AS overdue,
@@ -539,7 +571,8 @@ def _customer_health(f: Filters, settings: dict, ref) -> dict:
                    AS top20_share,
                    {R("100 * sum(total_spent) FILTER (WHERE q = 5) / nullif(sum(total_spent), 0)")}
                    AS bottom20_share FROM t""")
-    return {"rfm": rfm, "churn": churn, "due": due, "pareto": pareto, "directory": directory}
+    return {"rfm": rfm, "churn": churn, "due": due, "pareto": pareto, "directory": directory,
+            "trend": trend}
 
 
 def insights(f: Filters, settings: dict) -> dict:
@@ -1087,3 +1120,134 @@ def data_check() -> dict:
             FROM sales GROUP BY 1 ORDER BY sales DESC NULLS LAST"""),
     }
     return parallel(tasks)
+
+
+# ====================================================================== refill reminders
+# Lines that are not products (delivery fees, services) never count as refills.
+NOT_PRODUCT = """(coalesce(item_category, '') IN ('SERV', 'SERVICE', 'SRV')
+    OR coalesce(item_name, '') ~* '(deliver|fee|fees|service|توصيل|خدمة|رسوم)')"""
+REFILL_COLUMNS = ["phone", "name", "item", "code", "category", "branch", "purchases", "last_bought",
+                  "cycle_days", "due_date", "days_late", "refill_status", "avg_qty", "avg_amount",
+                  "lifetime_amount"]
+
+
+def refill_table(f: Filters, settings: dict) -> tuple[str, object]:
+    """One row per (customer, product) bought on a regular cycle.
+
+    cycle  = median days between purchases of that product (3+ purchases, cycle 5-120 days,
+             gaps reasonably regular)
+    due    = last purchase + cycle; status relative to the reference date:
+             due_soon (next 7 days) / overdue (late, up to one more cycle) / lapsed (later) / ok
+    """
+    hist = replace(f, date_from=None)  # cycles need the whole history up to the period end
+
+    def build(cur):
+        ref = reference_date(cur, f)
+        w, p = hist.where()
+        sql = f"""WITH d AS (
+              SELECT phone, coalesce(item_code, item_name) AS ikey, day,
+                     min(item_name) AS item, min(item_code) AS code,
+                     min(coalesce(item_category, material_group)) AS category, min(branch) AS branch,
+                     sum(quantity) AS qty, sum(item_price) AS amount,
+                     (array_agg(name) FILTER (WHERE name IS NOT NULL))[1] AS name
+              FROM sales WHERE phone IS NOT NULL AND phone_valid AND item_price > 0
+                AND coalesce(item_code, item_name) IS NOT NULL AND NOT {NOT_PRODUCT} AND {w}
+              GROUP BY phone, ikey, day),
+            g AS (SELECT d.*, day - lag(day) OVER (PARTITION BY phone, ikey ORDER BY day) AS gap FROM d),
+            s AS (SELECT phone, ikey, min(item) AS item, min(code) AS code, min(category) AS category,
+                         mode() WITHIN GROUP (ORDER BY branch) AS branch, max(name) AS name,
+                         count(*) AS purchases, max(day) AS last_bought,
+                         percentile_cont(0.5) WITHIN GROUP (ORDER BY gap) AS cycle,
+                         avg(gap) AS avg_gap, stddev_samp(gap) AS sd_gap,
+                         round(avg(qty)::numeric, 1)::float8 AS avg_qty,
+                         {R("avg(amount)")} AS avg_amount, {R("sum(amount)")} AS lifetime_amount
+                  FROM g GROUP BY phone, ikey)
+            SELECT phone, name, coalesce(item, code) AS item, code, category, branch, purchases,
+                   last_bought, round(cycle)::int AS cycle_days,
+                   last_bought + round(cycle)::int AS due_date,
+                   (?::date - (last_bought + round(cycle)::int)) AS days_late,
+                   CASE WHEN ?::date - (last_bought + round(cycle)::int) > round(cycle) THEN 'lapsed'
+                        WHEN ?::date - (last_bought + round(cycle)::int) > 0 THEN 'overdue'
+                        WHEN (last_bought + round(cycle)::int) - ?::date <= 7 THEN 'due_soon'
+                        ELSE 'ok' END AS refill_status,
+                   avg_qty, avg_amount, lifetime_amount
+            FROM s
+            WHERE purchases >= 3 AND cycle BETWEEN 5 AND 120
+              AND coalesce(sd_gap / nullif(avg_gap, 0), 0) <= 0.75"""
+        return sql, p + [ref, ref, ref, ref], ref
+    return _materialize("rf_", ("refill", hist.key()), build)
+
+
+REFILL_SORTS = {"due_date", "days_late", "lifetime_amount", "avg_amount", "purchases", "cycle_days",
+                "name", "item", "branch"}
+
+
+def refills(f: Filters, settings: dict, *, q=None, status=None, sort="due_date", desc=False,
+            page=1, page_size=50, limit_all=False) -> dict:
+    table, ref = refill_table(f, settings)
+    cur = db.cursor()
+    conds, p = ["TRUE"], []
+    st = list(status) if status else ["due_soon", "overdue"]
+    conds.append("refill_status = ANY(?)")
+    p.append(st)
+    if q:
+        digits = phone_query(q)
+        if digits:
+            conds.append("phone LIKE ?")
+            p.append(f"%{digits}%")
+        else:
+            conds.append("(name ILIKE ? OR item ILIKE ? OR code ILIKE ?)")
+            p += [f"%{q.strip()}%"] * 3
+    where = " AND ".join(conds)
+    sort = sort if sort in REFILL_SORTS else "due_date"
+    sql = (f"SELECT {', '.join(REFILL_COLUMNS)}, count(*) OVER () AS _total FROM {table} "
+           f"WHERE {where} ORDER BY {sort} {'DESC' if desc else 'ASC'} NULLS LAST, phone")
+    sql += " LIMIT 1048000" if limit_all else f" LIMIT {int(page_size)} OFFSET {int((page - 1) * page_size)}"
+    rows = db.rows(cur, sql, p)
+    total = rows[0]["_total"] if rows else 0
+    for r in rows:
+        r.pop("_total", None)
+        r["cid"] = cid(r["phone"])
+    summary = db.one(cur, f"""SELECT
+        count(*) FILTER (WHERE refill_status = 'due_soon') AS due_soon,
+        count(*) FILTER (WHERE refill_status = 'overdue') AS overdue,
+        count(*) FILTER (WHERE refill_status = 'lapsed') AS lapsed,
+        count(*) FILTER (WHERE refill_status = 'ok') AS ok,
+        count(DISTINCT phone) FILTER (WHERE refill_status IN ('due_soon', 'overdue')) AS customers_to_contact,
+        {R("coalesce(sum(avg_amount) FILTER (WHERE refill_status IN ('due_soon', 'overdue')), 0)")}
+          AS expected_value,
+        count(DISTINCT phone) AS refill_customers FROM {table}""")
+    top = db.rows(cur, f"""SELECT item, count(*) AS customers,
+        count(*) FILTER (WHERE refill_status IN ('due_soon', 'overdue')) AS due_now,
+        round(avg(cycle_days))::int AS cycle_days FROM {table}
+        GROUP BY item ORDER BY customers DESC LIMIT 15""")
+    return {"rows": rows, "total": total, "summary": summary, "top_items": top, "reference_date": ref}
+
+
+def customer_refills(phone: str, f: Filters, settings: dict) -> list:
+    table, _ = refill_table(f, settings)
+    return db.rows(db.cursor(), f"SELECT {', '.join(REFILL_COLUMNS)} FROM {table} WHERE phone = ? "
+                                "ORDER BY due_date", [phone])
+
+
+def customer_habits(phone: str, f: Filters) -> dict:
+    """How this customer shops: day, hour, items per visit, delivery share, returns."""
+    w, p = f.where()
+    cur = db.cursor()
+    base = f"FROM sales WHERE phone = ? AND {w}"
+    bp = [phone] + p
+    h = db.one(cur, f"""WITH v AS (SELECT visit_key, min(invoice_date) AS t, count(*) AS lines,
+            sum(item_price) AS total, min(invoice_type) AS stype, min(branch) AS branch {base}
+            GROUP BY visit_key)
+        SELECT mode() WITHIN GROUP (ORDER BY extract(isodow FROM t)::int) AS fav_dow,
+               mode() WITHIN GROUP (ORDER BY extract(hour FROM t)::int)
+                 FILTER (WHERE t::time <> '00:00') AS fav_hour,
+               round(avg(lines), 1)::float8 AS items_per_visit,
+               round(100.0 * count(*) FILTER (WHERE stype ILIKE '%deliver%') / nullif(count(*), 0))::int
+                 AS delivery_pct,
+               count(*) FILTER (WHERE total < 0 OR stype = 'Return') AS returns,
+               mode() WITHIN GROUP (ORDER BY branch) AS fav_branch FROM v""", bp)
+    h["categories"] = db.rows(cur, f"""SELECT coalesce(item_category, material_group, '—') AS category,
+        {R("sum(item_price)")} AS sales, count(DISTINCT visit_key) AS visits {base}
+        GROUP BY 1 ORDER BY sales DESC LIMIT 8""", bp)
+    return h
