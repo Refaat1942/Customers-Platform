@@ -24,9 +24,11 @@ Interactive reference (all fields, try it out): `https://<platform-address>/api/
 | Authentication | header `X-API-Key: cpk_...` |
 | Compression (optional) | `Content-Encoding: gzip` on the request body. Recommended for history batches. |
 
-**API keys:** the platform admin creates **one key per branch** in *Settings → POS integration*. Each key
-has a default **branch name**, which is used for every invoice/customer sent with that key unless the
-payload sets `branch`. A key is shown only once and can be revoked at any time.
+**API keys:** the platform admin creates **one key per POS device** (e.g. `CA28 - Device 2`) in
+*Settings → POS integration*, by hand or all at once by uploading an Excel of branches with their number
+of devices. Each key has a default **branch code** (e.g. `CA28`), which is used for every invoice/customer
+sent with that key unless the payload sets `branch`. Store each device's key in that device's settings.
+A key is shown only once and can be revoked at any time (only that device stops).
 
 > Use HTTPS in production (put the platform behind a domain with a certificate). Over plain HTTP the key
 > can be read by anyone on the network path.
