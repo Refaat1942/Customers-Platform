@@ -108,7 +108,8 @@ def login(body: LoginIn, request: Request):
     key = f"{ip}|{body.username.lower()}"
     if not login_allowed(key):
         raise HTTPException(429, "Too many failed attempts. Try again in 15 minutes.")
-    u = db.one(db.cursor(), "SELECT * FROM users WHERE lower(username) = lower(?)",
+    # usernames are case-sensitive: "Ahmed" and "ahmed" are not the same login
+    u = db.one(db.cursor(), "SELECT * FROM users WHERE username = ?",
                [body.username.strip()])
     if not u or not u["active"] or not check_password(body.password, u["password_hash"]):
         login_failed(key)

@@ -21,7 +21,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [ready, setReady] = useState(false);
   const qc = useQueryClient();
 
-  const logout = useCallback(() => { setToken(null); setUser(null); qc.clear(); }, [qc]);
+  // forget all data on sign-out, but keep the branding (logo, name, colour) for the login page
+  const logout = useCallback(() => {
+    setToken(null); setUser(null);
+    qc.removeQueries({ predicate: (q) => q.queryKey[0] !== "branding" });
+  }, [qc]);
 
   const refresh = useCallback(async () => {
     if (!getToken()) { setReady(true); return; }

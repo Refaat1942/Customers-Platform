@@ -593,3 +593,12 @@ def test_refills_and_trend(client):
     prof = client.get(f"/api/customers/{c['cid']}", params={"date_to": "2026-10-30"}).json()
     assert prof["refills"] and prof["habits"]["items_per_visit"] == 2
     assert client.get("/api/refills", params={"export": "true"}).content[:2] == b"PK"
+
+
+def test_username_is_case_sensitive(client):
+    assert client.post("/api/users", json={"username": "Ahmed.R", "password": "pass-1234567",
+                                           "role": "viewer"}).status_code == 200
+    from app.main import app
+    c = TestClient(app)
+    assert c.post("/api/auth/login", json={"username": "Ahmed.R", "password": "pass-1234567"}).status_code == 200
+    assert c.post("/api/auth/login", json={"username": "ahmed.r", "password": "pass-1234567"}).status_code == 401
