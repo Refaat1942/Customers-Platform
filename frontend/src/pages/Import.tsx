@@ -8,18 +8,20 @@ import { fmtBytes, fmtDate, fmtInt } from "../lib/format";
 import DataTable from "../components/DataTable";
 import { Badge, Card, Notice, PageHeader } from "../components/ui";
 
-type Kind = "sales" | "customers" | "skip" | "empty";
+type Kind = "sales" | "customers" | "products" | "skip" | "empty";
+type DataKind = "sales" | "customers" | "products";
+const DATA_KINDS: string[] = ["sales", "customers", "products"];
 type SheetInfo = {
   sheet: string | null; rows: number | null; columns: string[]; kind: Kind; kind_reason: string; warnings?: string[];
   date_order?: "dmy" | "mdy"; date_order_sure?: boolean; text_dates?: boolean;
-  mappings: Record<"sales" | "customers", Record<string, string | null>>; sample: Record<string, any>[];
+  mappings: Record<DataKind, Record<string, string | null>>; sample: Record<string, any>[];
 };
 type Preview = {
   upload_id: string; filename: string; sheets_info: SheetInfo[];
-  fields: Record<"sales" | "customers", string[]>; required: Record<"sales" | "customers", string[]>;
-  modes: Record<"sales" | "customers", string[]>; duplicate_of: { id: number; finished_at: string } | null;
+  fields: Record<DataKind, string[]>; required: Record<DataKind, string[]>;
+  modes: Record<DataKind, string[]>; duplicate_of: { id: number; finished_at: string } | null;
 };
-type SheetState = SheetInfo & { mode: Record<"sales" | "customers", string>; open: boolean; fileIdx: number };
+type SheetState = SheetInfo & { mode: Record<DataKind, string>; open: boolean; fileIdx: number };
 type FileState = { name: string; size: number; sent: number; status: "waiting" | "uploading" | "reading" | "ready" | "error"; err?: string; pv?: Preview };
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -92,7 +94,7 @@ export default function Import() {
         const p = await api.post<Preview>(`/imports/uploads/${id}/finish`);
         patch(idx, { status: "ready", pv: p });
         setSheets((all) => [...all, ...p.sheets_info.map((x, i) => ({
-          ...x, fileIdx: idx, mode: { sales: "merge", customers: "upsert" },
+          ...x, fileIdx: idx, mode: { sales: "merge", customers: "upsert", products: "upsert" },
           open: x.kind_reason === "unknown" || (list.length === 1 && (i === 0 || p.sheets_info.length <= 2)),
         }))]);
       } catch (e) { patch(idx, { status: "error", err: (e as Error).message }); }
@@ -102,15 +104,15 @@ export default function Import() {
   const reset = () => { setFiles([]); setSheets([]); setPhase("idle"); };
 
   const update = (i: number, patch: Partial<SheetState>) => setSheets((all) => all.map((x, j) => (j === i ? { ...x, ...patch } : x)));
-  const setField = (i: number, kind: "sales" | "customers", f: string, v: string | null) =>
+  const setField = (i: number, kind: DataKind, f: string, v: string | null) =>
     setSheets((all) => all.map((x, j) => (j === i ? { ...x, mappings: { ...x.mappings, [kind]: { ...x.mappings[kind], [f]: v } } } : x)));
-  const active = sheets.filter((x) => x.kind === "sales" || x.kind === "customers");
-  const missingOf = (x: SheetState) => (x.kind === "sales" || x.kind === "customers") && meta
-    ? meta.required[x.kind].filter((f) => !x.mappings[x.kind as "sales"]?.[f]) : [];
+  const active = sheets.filter((x) => DATA_KINDS.includes(x.kind));
+  const missingOf = (x: SheetState) => DATA_KINDS.includes(x.kind) && meta
+    ? (meta.required[x.kind as DataKind] ?? []).filter((f) => !x.mappings[x.kind as DataKind]?.[f]) : [];
   const blocked = busy || active.length === 0 || active.some((x) => missingOf(x).length > 0);
 
   const commit = async () => {
-    if (active.some((x) => x.mode[x.kind as "sales"] === "replace_all") && !confirm(t("imp.modes.replace_all") + "?")) return;
+    if (active.some((x) => x.mode[x.kind as DataKind] === "replace_all") && !confirm(t("imp.modes.replace_all") + "?")) return;
     setErr(null); setPhase("importing");
     const errors: string[] = [];
     // one request per file; the server runs all imports one after another
@@ -120,7 +122,7 @@ export default function Import() {
       try {
         await api.post("/imports/commit", {
           upload_id: f.pv.upload_id,
-          jobs: jobs.map((x) => ({ sheet: x.sheet, kind: x.kind, mapping: x.mappings[x.kind as "sales"], mode: x.mode[x.kind as "sales"], date_order: x.date_order ?? "dmy" })),
+          jobs: jobs.map((x) => ({ sheet: x.sheet, kind: x.kind, mapping: x.mappings[x.kind as DataKind], mode: x.mode[x.kind as DataKind], date_order: x.date_order ?? "dmy" })),
         });
       } catch (e) { errors.push(`${f.name}: ${(e as Error).message}`); }
     }
@@ -200,7 +202,7 @@ export default function Import() {
             {sheets.length > 1 && <div className="text-sm font-semibold mb-3">{t("imp.sheetsFound", { n: sheets.length })}</div>}
             <div className="space-y-4">
               {sheets.map((x, i) => {
-                const k = x.kind === "sales" || x.kind === "customers" ? x.kind : null;
+                const k = DATA_KINDS.includes(x.kind) ? (x.kind as DataKind) : null;
                 const missing = missingOf(x);
                 return (
                   <div key={i} className={clsx("rounded-lg border p-4", k ? "border-line" : "border-dashed border-line bg-surface/50")}>
@@ -213,7 +215,7 @@ export default function Import() {
                         <span className="text-xs text-muted">{t("imp.kind")}</span>
                         <select className="input py-1.5 w-auto" value={x.kind} disabled={x.kind === "empty"}
                           onChange={(e) => update(i, { kind: e.target.value as Kind, open: e.target.value !== "skip" })}>
-                          {(x.kind === "empty" ? ["empty"] : ["sales", "customers", "skip"]).map((o) => <option key={o} value={o}>{t(`imp.kinds.${o}`)}</option>)}
+                          {(x.kind === "empty" ? ["empty"] : ["sales", "customers", "products", "skip"]).map((o) => <option key={o} value={o}>{t(`imp.kinds.${o}`)}</option>)}
                         </select>
                       </div>
                     </div>
@@ -247,10 +249,10 @@ export default function Import() {
                         ) : (
                           <>
                             <div className="grid sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-3 mt-3">
-                              {meta.fields[k].map((f) => (
+                              {(meta.fields[k] ?? []).map((f) => (
                                 <div key={f}>
-                                  <label className="label">{t(`imp.fields.${f}`)}{meta.required[k].includes(f) && <span className="text-bad"> *</span>}</label>
-                                  <select className={clsx("input", meta.required[k].includes(f) && !x.mappings[k]?.[f] && "border-bad", x.mappings[k]?.[f] && "bg-brand-soft/40")}
+                                  <label className="label">{t(`imp.fields.${f}`)}{(meta.required[k] ?? []).includes(f) && <span className="text-bad"> *</span>}</label>
+                                  <select className={clsx("input", (meta.required[k] ?? []).includes(f) && !x.mappings[k]?.[f] && "border-bad", x.mappings[k]?.[f] && "bg-brand-soft/40")}
                                     value={x.mappings[k]?.[f] ?? ""} onChange={(e) => setField(i, k, f, e.target.value || null)}>
                                     <option value="">{t("imp.notMapped")}</option>
                                     {x.columns.map((c) => <option key={c} value={c}>{example(x, c)}</option>)}
@@ -268,9 +270,9 @@ export default function Import() {
                           </>
                         )}
                         <div className="mt-3 flex flex-wrap gap-x-5 gap-y-2">
-                          {meta.modes[k].map((m) => (
+                          {(meta.modes[k] ?? []).map((m) => (
                             <label key={m} className={clsx("flex items-center gap-2 text-sm cursor-pointer", m === "replace_all" && "text-bad", m === "replace_period" && "text-warn")}>
-                              <input type="radio" className="accent-brand" checked={x.mode[k] === m} onChange={() => update(i, { mode: { ...x.mode, [k]: m } })} /> {t(`imp.modes.${m}`)}
+                              <input type="radio" className="accent-brand" checked={x.mode[k] === m} onChange={() => update(i, { mode: { ...x.mode, [k]: m } })} /> {t(k === "products" ? `imp.modes.${m}_products` : `imp.modes.${m}`)}
                             </label>
                           ))}
                         </div>

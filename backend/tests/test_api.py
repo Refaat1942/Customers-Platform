@@ -661,3 +661,84 @@ def test_growth_periods_are_clear(client):
     allt = client.get("/api/insights").json()["periods"]
     c0, c1 = allt["current"]; p0, p1 = allt["previous"]
     assert c0[5:] == p0[5:] and c1[5:] == p1[5:] and int(c1[:4]) - int(p1[:4]) == 1  # last 30 days vs a year before
+
+
+def _headerless(rows) -> bytes:
+    import openpyxl
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    for r in rows:
+        ws.append(r)
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def test_sales_types_product_catalogue_and_shifts(client):
+    """'Digital' / 'Cards' are sales types (not categories); codes without names get the name
+    other lines carry; a product list fills names; product detail and shifts work."""
+    import datetime as dt
+    import random
+    rnd = random.Random(7)
+    items = [("100201", "PANADOL EXTRA 24 TAB", "Drugs"), ("100202", "VITAMIN C 1000 MG", "Vitamins"),
+             ("100203", "BABY SHAMPOO 200ML", "Baby"), ("100204", "SUNSCREEN SPF50", "Cosmetics"),
+             ("100205", "INSULIN PEN 3ML", "Drugs")]
+    NAMES = ["Ahmed Ali", "Mona Samir", "Omar Hassan", "Sara Adel", "Hany Fawzy", "Laila Nabil",
+             "Karim Said", "Dina Magdy", "Youssef Amr"]
+    rows = []
+    for inv in range(1, 41):
+        br = ["CA31", "CA32"][(inv % 9) % 2]   # customers shop at their own branch
+        phone = f"0101234{inv % 9:04d}"
+        hour = [3, 10, 19][inv % 3]
+        d = dt.datetime(2025, 3, 1 + inv % 25, hour, 15)
+        stype = ["Digital", "Cards", "Cash"][inv % 3]
+        for k in range(1 + inv % 3):
+            code, name, cat = items[(inv + k) % len(items)]
+            rows.append([br, 70000 + inv, NAMES[inv % 9], phone, d.date(), d.time(),
+                         int(code), None if code == "100205" or (inv % 4 == 0) else name, "EA",
+                         1 + k, round(rnd.uniform(20, 300), 2), stype, cat])
+    up = upload(client, _headerless(rows), "pos_types.xlsx")
+    sh = up["sheets_info"][0]
+    assert sh["kind"] == "sales"
+    m = sh["mappings"]["sales"]
+    assert m["invoice_type"] == "Column L", m
+    assert m["item_category"] == "Column M", m
+    st = _commit_and_wait(client, up, "sales", "merge", m)
+    assert st["status"] == "done", st
+
+    lines = client.get("/api/sales", params={"q": "01012340001", "page_size": 200}).json()["rows"]
+    assert {r["invoice_type"] for r in lines} <= {"Digital", "Cards", "Cash"}
+    # names learnt from other lines with the same code
+    assert all(r["item_name"] for r in lines if r["item_code"] != "100205")
+
+    # product list: fills the code that never had a name
+    plist = _headerless([["Item Code", "Item Description", "Group"],
+                         ["100205", "INSULIN PEN 3ML", "Drugs"], ["100201", "PANADOL EXTRA 24 TAB", "Drugs"]])
+    up = upload(client, plist, "products.xlsx")
+    sh = up["sheets_info"][0]
+    assert sh["kind"] == "products", sh["kind_reason"]
+    st = _commit_and_wait(client, up, "products", "upsert", sh["mappings"]["products"])
+    assert st["status"] == "done" and st["rows_imported"] == 2, st
+    p = client.get("/api/products", params={"q": "100205"}).json()
+    assert p["rows"][0]["code"] == "100205" and p["rows"][0]["item"] == "INSULIN PEN 3ML"
+
+    det = client.get("/api/products/detail", params={"key": "c:100201"}).json()
+    assert det["product"]["item"] == "PANADOL EXTRA 24 TAB"
+    assert det["by_branch"] and det["by_branch"][0]["units"] >= det["by_branch"][-1]["units"]
+    assert {s["shift"] for s in det["shifts"]} <= {"night", "morning", "evening", "unknown"}
+    assert det["hourly"] and det["together"]
+    assert client.get("/api/products/detail", params={"key": "c:100201", "export": "true"}).content[:2] == b"PK"
+    assert client.get("/api/products/detail", params={"key": "c:nope"}).status_code == 404
+
+    s = client.get("/api/shifts", params={"date_from": "2025-03-01", "date_to": "2025-03-31"}).json()
+    by = {t["shift"]: t for t in s["totals"]}
+    assert by["night"]["invoices"] > 0 and by["morning"]["invoices"] > 0 and by["evening"]["invoices"] > 0
+    assert round(sum(t["share"] for t in s["totals"])) == 100
+    assert {b["branch"] for b in s["by_branch"]} >= {"CA31", "CA32"}
+    assert client.get("/api/shifts", params={"export": "true"}).content[:2] == b"PK"
+    # shift boundaries are editable
+    cur = client.get("/api/settings").json()
+    bad = client.put("/api/settings", json={**{k: cur[k] for k in ("active_days", "attention_days",
+                     "high_value_spend", "loyalty_spend", "loyalty_visits")},
+                     "shift_morning": "18:00", "shift_evening": "09:00"})
+    assert bad.status_code == 400

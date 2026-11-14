@@ -46,7 +46,7 @@ LABELS = {
     "month": ("Month", "الشهر"),
     "sales_type": ("Sales Type", "نوع البيع"),
     "season": ("Season", "الموسم"),
-    "item": ("Item", "الصنف"),
+    "item": ("Product Name", "اسم الصنف"),
     "metric": ("Metric", "المؤشر"),
     "trend": ("Spend Trend", "اتجاه الإنفاق"),
     "trend_pct": ("Trend %", "التغير %"),
@@ -75,7 +75,7 @@ LABELS = {
     "median_invoice": ("Typical Invoice", "الفاتورة المعتادة"),
     "items_count": ("Different Products", "عدد الأصناف المختلفة"),
     "fav_item": ("Favourite Product", "الصنف المفضل"),
-    "code": ("Code", "الكود"),
+    "code": ("Product Code", "كود الصنف"),
     "category": ("Category", "الفئة"),
     "avg_price": ("Avg Price", "متوسط السعر"),
     "repeat_buyers": ("Repeat Buyers", "عملاء متكررون"),
@@ -113,9 +113,33 @@ LABELS = {
     "items": ("Items", "الأصناف"),
     "times": ("Times Bought", "مرات الشراء"),
     "value": ("Value", "القيمة"),
+    "shift": ("Shift", "الوردية"),
+    "units": ("Units", "الوحدات"),
+    "units_per_day": ("Units / Day", "وحدات / يوم"),
+    "share": ("Share %", "النسبة %"),
+    "pct": ("% of Invoices", "% من الفواتير"),
+    "purchases": ("Purchases", "مرات الشراء"),
+    "last_bought": ("Last Bought", "آخر شراء"),
+    "branches": ("Branches", "عدد الفروع"),
+    "avg_days_between": ("Re-buys Every (days)", "يعيد الشراء كل (يوم)"),
+    "hour": ("Hour", "الساعة"),
+    "top_shift": ("Busiest Shift", "الوردية الأعلى"),
+    "night_sales": ("Night Sales", "مبيعات الليل"),
+    "morning_sales": ("Morning Sales", "مبيعات الصباح"),
+    "evening_sales": ("Evening Sales", "مبيعات المساء"),
+    "night_share": ("Night %", "الليل %"),
+    "morning_share": ("Morning %", "الصباح %"),
+    "evening_share": ("Evening %", "المساء %"),
+    "live_sales": ("Live POS Sales", "مبيعات الكاشير المباشر"),
+    "live_invoices": ("Live POS Invoices", "فواتير الكاشير المباشر"),
+    "file_sales": ("Uploaded Files Sales", "مبيعات الملفات المرفوعة"),
+    "file_invoices": ("Uploaded Files Invoices", "فواتير الملفات المرفوعة"),
 }
 
 VALUES = {
+    "night": ("Night shift", "وردية الليل"),
+    "morning": ("Morning shift", "وردية الصباح"),
+    "evening": ("Evening shift", "وردية المساء"),
     "active": ("Active", "نشط"),
     "attention": ("Needs Attention", "يحتاج متابعة"),
     "inactive": ("Inactive", "غير نشط"),
@@ -156,7 +180,7 @@ VALUES = {
 ACTIONS = {"active": "keep_engaged", "attention": "send_offer", "inactive": "call_customer",
            "unknown": "call_customer"}
 
-TRANSLATED_COLS = {"status", "action", "high_value", "loyal", "phone_valid", "top_season", "season", "bought",
+TRANSLATED_COLS = {"shift", "top_shift", "status", "action", "high_value", "loyal", "phone_valid", "top_season", "season", "bought",
                    "segment", "churn_risk", "trend", "refill_status"}
 
 

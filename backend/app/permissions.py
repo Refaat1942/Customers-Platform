@@ -13,6 +13,7 @@ PERMISSIONS = [
     ("insights", "Smart insights", "التحليلات الذكية", "analysis"),
     ("business", "Business analysis", "تحليل الأعمال", "analysis"),
     ("products", "Products", "الأصناف", "analysis"),
+    ("shifts", "Shifts (night / morning / evening)", "الورديات (ليل / صباح / مساء)", "analysis"),
     ("area", "Areas", "المناطق", "analysis"),
     ("transactions", "Transactions", "المعاملات", "analysis"),
     ("ai", "AI analyst", "المحلل الذكي", "analysis"),
@@ -29,10 +30,10 @@ ALL = [p[0] for p in PERMISSIONS]
 # permissions added later inherit from the one that used to cover that page,
 # so existing roles keep seeing exactly what they saw before
 DERIVED = {"live": "dashboard", "customer_base": "customers", "refills": "recommendations",
-           "products": "business", "data_check": "import"}
+           "products": "business", "data_check": "import", "shifts": "insights"}
 
 VIEW = ["dashboard", "live", "insights", "customers", "customer_base", "phones", "business",
-        "products", "recommendations", "refills", "area", "transactions"]
+        "products", "shifts", "recommendations", "refills", "area", "transactions"]
 
 DEFAULT_ROLES = {
     "admin": ("Full access", ALL),
@@ -40,5 +41,5 @@ DEFAULT_ROLES = {
     "branch_staff": ("Branch staff: call lists only", ["dashboard", "live", "customers", "phones",
                                                        "recommendations", "refills"]),
     "viewer": ("Read-only, phone numbers hidden", ["dashboard", "insights", "customers",
-                                                    "business", "products", "area"]),
+                                                    "business", "products", "shifts", "area"]),
 }

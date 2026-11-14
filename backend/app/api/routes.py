@@ -312,6 +312,8 @@ class SettingsIn(BaseModel):
     loyalty_visits: int = Field(ge=1)
     openai_model: str | None = None
     openai_api_key: str | None = None   # "" removes it, None keeps it
+    shift_morning: str | None = Field(default=None, pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
+    shift_evening: str | None = Field(default=None, pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
 
 
 @router.get("/settings")
@@ -323,6 +325,8 @@ def get_settings(user: dict = Depends(current_user)):
 def put_settings(body: SettingsIn, user: dict = Depends(require("settings"))):
     if body.attention_days <= body.active_days:
         raise HTTPException(400, "'Needs attention' days must be greater than 'Active' days")
+    if body.shift_morning and body.shift_evening and body.shift_evening <= body.shift_morning:
+        raise HTTPException(400, "The evening shift must start after the morning shift")
     values = body.model_dump(exclude_none=True)
     if body.openai_api_key is not None:
         values["openai_api_key"] = body.openai_api_key.strip()
@@ -593,15 +597,68 @@ def get_products(f: an.Filters = Depends(filters), q: str | None = None, sort: s
         need_export(user)
         res = an.products(f, q=q, sort=sort, desc=desc, limit_all=True)
         audit(user, "export", f"products ({res['total']}) {filter_text(f)}")
-        cols = ["item", "code", "category", "material_group", "sales", "share", "quantity",
+        cols = ["code", "item", "category", "material_group", "sales", "share", "quantity",
                 "invoices", "customers", "repeat_buyers", "repeat_rate", "times_per_buyer",
-                "avg_price", "top_branch", "first_sold", "last_sold"]
+                "avg_days_between", "avg_price", "branches", "top_branch", "first_sold", "last_sold"]
         sheet = "الأصناف" if lang == "ar" else "Products"
         return xlsx_response(ex.workbook([(sheet, ex.frame(res["rows"], cols, lang))], lang, sheet,
                                          filter_meta(f, lang)), "products_report.xlsx")
     return db.cached(("products", f.key(), q, sort, desc, page, page_size),
                      lambda: an.products(f, q=q, sort=sort, desc=desc, page=page,
                                          page_size=page_size))
+
+
+@router.get("/products/detail")
+def get_product_detail(key: str, f: an.Filters = Depends(filters), export: bool = False,
+                       lang: str = "en", user: dict = Depends(require("products"))):
+    settings = db.get_settings()
+    res = db.cached(("product", key, f.key(), settings.get("shift_morning"), settings.get("shift_evening")),
+                    lambda: an.product_detail(key, f, settings))
+    if not res:
+        raise HTTPException(404, "No sales of this product in the selected period")
+    res = {**res, "top_customers": protect([dict(r) for r in res["top_customers"]], user)}
+    if export:
+        need_export(user)
+        audit(user, "export", f"product {key} {filter_text(f)}")
+        ar = lang == "ar"
+        sheets = [
+            ("الفروع" if ar else "Branches", ex.frame(res["by_branch"], ["branch", "units", "sales", "invoices",
+                                                                       "customers", "units_per_day", "share", "last_sold"], lang)),
+            ("شهري" if ar else "Monthly", ex.frame(res["monthly"], ["month", "units", "sales", "customers"], lang)),
+            ("الورديات" if ar else "Shifts", ex.frame(res["shifts"], ["shift", "units", "sales", "invoices"], lang)),
+            ("العملاء" if ar else "Customers", ex.frame(res["top_customers"], ["phone", "name", "purchases", "units",
+                                                                            "sales", "last_bought", "branch"], lang)),
+            ("يشترى معه" if ar else "Bought together", ex.frame(res["together"], ["code", "item", "invoices", "pct"], lang)),
+        ]
+        return xlsx_response(ex.workbook(sheets, lang, res["product"].get("item") or key, filter_meta(f, lang)),
+                             "product_report.xlsx")
+    audit(user, "view_product", key)
+    return res
+
+
+# ====================================================================== shifts
+@router.get("/shifts")
+def get_shifts(f: an.Filters = Depends(filters), export: bool = False, lang: str = "en",
+               user: dict = Depends(require("shifts"))):
+    settings = db.get_settings()
+    res = db.cached(("shifts", f.key(), settings.get("shift_morning"), settings.get("shift_evening")),
+                    lambda: an.shifts(f, settings))
+    if export:
+        need_export(user)
+        audit(user, "export", f"shifts {filter_text(f)}")
+        ar = lang == "ar"
+        sheets = [
+            ("الورديات" if ar else "Shifts", ex.frame(res["totals"], ["shift", "sales", "share", "invoices", "customers",
+                                                                     "units", "avg_invoice"], lang)),
+            ("الفروع" if ar else "Branches", ex.frame(res["by_branch"], ["branch", "sales", "invoices", "top_shift",
+                                                                        "night_sales", "morning_sales", "evening_sales",
+                                                                        "night_share", "morning_share", "evening_share"], lang)),
+            ("المصدر" if ar else "Source", ex.frame(res["by_source"], ["shift", "live_sales", "live_invoices",
+                                                                      "file_sales", "file_invoices"], lang)),
+            ("بالساعة" if ar else "Hourly", ex.frame(res["hourly"], ["hour", "sales", "invoices"], lang)),
+        ]
+        return xlsx_response(ex.workbook(sheets, lang, sheets[0][0], filter_meta(f, lang)), "shifts_report.xlsx")
+    return res
 
 
 # ====================================================================== area
@@ -759,7 +816,7 @@ def upload_preview(uid: str, sheet: str, user: dict = Depends(require("import"))
 
 class ImportJob(BaseModel):
     sheet: str | None = None
-    kind: Literal["sales", "customers"] = "sales"
+    kind: Literal["sales", "customers", "products"] = "sales"
     mapping: dict[str, str | None]
     date_order: Literal["dmy", "mdy"] = "dmy"   # 04/05/2026 = 4 May (dmy) or 5 April (mdy)
     mode: Literal["merge", "replace_period", "append_new", "replace_all", "upsert"] = "merge"
@@ -770,7 +827,7 @@ class CommitIn(BaseModel):
     # several sheets of one workbook, each with its own kind and columns ...
     jobs: list[ImportJob] | None = None
     # ... or a single sheet (older clients)
-    kind: Literal["sales", "customers"] = "sales"
+    kind: Literal["sales", "customers", "products"] = "sales"
     mapping: dict[str, str | None] | None = None
     mode: Literal["merge", "replace_period", "append_new", "replace_all", "upsert"] = "merge"
     sheet: str | None = None
@@ -778,9 +835,10 @@ class CommitIn(BaseModel):
 
 
 def _check_job(j: ImportJob) -> dict:
-    fields, required, modes = (
-        (FIELDS, REQUIRED_FIELDS, importer.IMPORT_MODES) if j.kind == "sales"
-        else (CUSTOMER_FIELDS, CUSTOMER_REQUIRED, importer.CUSTOMER_MODES))
+    fields, required, modes = {
+        "sales": (FIELDS, REQUIRED_FIELDS, importer.IMPORT_MODES),
+        "customers": (CUSTOMER_FIELDS, CUSTOMER_REQUIRED, importer.CUSTOMER_MODES),
+        "products": (importer.PRODUCT_COLS, ["item_code"], importer.PRODUCT_MODES)}[j.kind]
     where = f" (sheet '{j.sheet}')" if j.sheet else ""
     if j.mode not in modes:
         raise HTTPException(400, f"Mode must be one of: {', '.join(modes)}{where}")
@@ -859,7 +917,7 @@ def cancel_import(imp_id: int, user: dict = Depends(require("import"))):
 def delete_import(imp_id: int, user: dict = Depends(require("import"))):
     cur = db.cursor()
     imp = db.one(cur, "SELECT kind FROM imports WHERE id = ?", [imp_id])
-    table = "customer_directory" if imp and imp["kind"] == "customers" else "sales"
+    table = {"customers": "customer_directory", "products": "products"}.get((imp or {}).get("kind"), "sales")
     n = cur.execute(f"SELECT count(*) FROM {table} WHERE import_id = ?", [imp_id]).fetchone()[0]
     cur.execute(f"DELETE FROM {table} WHERE import_id = ?", [imp_id])
     cur.execute("UPDATE imports SET status='deleted', message=? WHERE id = ?",

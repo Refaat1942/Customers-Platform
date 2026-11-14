@@ -9,7 +9,7 @@ import { Badge, Card, Notice, PageHeader, Spinner } from "../components/ui";
 import DataTable from "../components/DataTable";
 import { fmtDate, fmtInt, fmtMoney } from "../lib/format";
 
-type S = { active_days: number; attention_days: number; high_value_spend: number; loyalty_spend: number; loyalty_visits: number; openai_model: string; openai_key_set: boolean; openai_key_hint: string };
+type S = { active_days: number; attention_days: number; high_value_spend: number; loyalty_spend: number; loyalty_visits: number; shift_morning: string; shift_evening: string; openai_model: string; openai_key_set: boolean; openai_key_hint: string };
 
 export default function Settings() {
   const { t } = useTranslation();
@@ -24,7 +24,7 @@ export default function Settings() {
     if (!s) return;
     setMsg(null);
     try {
-      const body = { active_days: s.active_days, attention_days: s.attention_days, high_value_spend: s.high_value_spend, loyalty_spend: s.loyalty_spend, loyalty_visits: s.loyalty_visits, openai_model: s.openai_model, ...extra };
+      const body = { active_days: s.active_days, attention_days: s.attention_days, high_value_spend: s.high_value_spend, loyalty_spend: s.loyalty_spend, loyalty_visits: s.loyalty_visits, shift_morning: s.shift_morning, shift_evening: s.shift_evening, openai_model: s.openai_model, ...extra };
       setS(await api.put<S>("/settings", body)); setKey("");
       setMsg({ kind: "success", text: t("app.saved"), at });
       qc.invalidateQueries();
@@ -51,6 +51,18 @@ export default function Settings() {
           </div>
           <button className="btn-primary mt-4" onClick={() => save("rules")}>{t("app.save")}</button>
           {note("rules")}
+        </Card>
+
+        <Card title={t("shift.settings")} help={t("shift.settingsHelp")}>
+          <div className="grid sm:grid-cols-3 gap-4">
+            <div><label className="label">{t("shift.night")}</label><input className="input" value={`00:00 – ${s.shift_morning ?? "08:30"}`} disabled dir="ltr" /></div>
+            <div><label className="label">{t("shift.morningStart")}</label>
+              <input type="time" className="input" dir="ltr" value={s.shift_morning ?? "08:30"} onChange={(e) => setS({ ...s, shift_morning: e.target.value })} /></div>
+            <div><label className="label">{t("shift.eveningStart")}</label>
+              <input type="time" className="input" dir="ltr" value={s.shift_evening ?? "16:30"} onChange={(e) => setS({ ...s, shift_evening: e.target.value })} /></div>
+          </div>
+          <button className="btn-primary mt-4" onClick={() => save("shifts")}>{t("app.save")}</button>
+          {note("shifts")}
         </Card>
 
         <Card title={t("settings.ai")}>

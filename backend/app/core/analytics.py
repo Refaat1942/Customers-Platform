@@ -403,19 +403,21 @@ def customer_profile(phone: str, f: Filters, settings: dict) -> dict | None:
         "monthly": db.rows(cur, f"""SELECT to_char(date_trunc('month', day), 'YYYY-MM') AS month,
             {R("sum(item_price)")} AS sales, count(DISTINCT visit_key) AS visits
             {base} GROUP BY 1 ORDER BY 1""", bp),
-        "top_items": db.rows(cur, f"""SELECT coalesce(item_name, item_code, '-') AS item,
+        "top_items": db.rows(cur, f"""SELECT coalesce(mode() WITHIN GROUP (ORDER BY item_name),
+                min(item_code), '-') AS item,
             sum(quantity) AS quantity, {R("sum(item_price)")} AS sales,
             count(DISTINCT visit_key) AS times
-            {base} GROUP BY 1 ORDER BY sales DESC LIMIT 15""", bp),
+            {base} GROUP BY {PRODUCT_KEY} ORDER BY sales DESC LIMIT 15""", bp),
         "branches": db.rows(cur, f"""SELECT coalesce(branch, '-') AS branch,
             {R("sum(item_price)")} AS sales, count(DISTINCT visit_key) AS visits
             {base} GROUP BY 1 ORDER BY sales DESC""", bp),
-        "items": db.rows(cur, f"""SELECT coalesce(item_name, item_code, '-') AS item,
-            min(item_code) AS code, min(coalesce(item_category, material_group)) AS category,
+        "items": db.rows(cur, f"""SELECT {PRODUCT_KEY} AS key, min(item_code) AS code,
+            mode() WITHIN GROUP (ORDER BY item_name) AS item,
+            min(coalesce(item_category, material_group)) AS category,
             sum(quantity) AS quantity, count(DISTINCT visit_key) AS times,
             {R("sum(item_price)")} AS sales, {R("avg(item_price / nullif(quantity, 0))")} AS avg_price,
             min(day) AS first_bought, max(day) AS last_bought
-            {base} GROUP BY 1 ORDER BY sales DESC LIMIT 1000""", bp),
+            {base} AND coalesce(item_code, item_name) IS NOT NULL GROUP BY 1 ORDER BY sales DESC LIMIT 1000""", bp),
         "visits": db.rows(cur, f"""SELECT visit_key, min(invoice_no) AS invoice_no,
             min(invoice_date) AS date,
             min(branch) AS branch, min(invoice_type) AS sales_type, count(*) AS lines,
@@ -750,14 +752,130 @@ def alerts(ins: dict, settings: dict) -> list[dict]:
     return out
 
 
+# ====================================================================== shifts
+SHIFTS = ["night", "morning", "evening"]
+
+
+def _hhmm(v, default: str) -> str:
+    v = str(v or default).strip()
+    return v if re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", v) else default
+
+
+def shift_sql(settings: dict | None = None, col: str = "invoice_date") -> str:
+    """Night 00:00 -> morning start, Morning -> evening start, Evening -> midnight.
+    Lines saved without a time (exactly 00:00:00) are 'unknown'."""
+    st = settings or db.get_settings()
+    m = _hhmm(st.get("shift_morning"), "08:30")
+    e = _hhmm(st.get("shift_evening"), "16:30")
+    return (f"(CASE WHEN {col}::time = '00:00:00' THEN 'unknown' "
+            f"WHEN {col}::time < '{m}' THEN 'night' WHEN {col}::time < '{e}' THEN 'morning' "
+            f"ELSE 'evening' END)")
+
+
+def shifts(f: Filters, settings: dict) -> dict:
+    """Sales by shift (night / morning / evening), by branch, by hour, live POS vs uploaded files."""
+    w, p = f.where()
+    sh = shift_sql(settings)
+    base = f"SELECT *, {sh} AS shift, CASE WHEN source = 'pos' THEN 'live' ELSE 'file' END AS src FROM sales WHERE {w}"
+    tasks = {
+        "totals": (f"""WITH s AS ({base})
+            SELECT shift, {R("sum(item_price)")} AS sales, count(DISTINCT visit_key) AS invoices,
+                   count(DISTINCT phone) AS customers, round(sum(quantity)::numeric, 0)::float8 AS units,
+                   {R("sum(item_price) / nullif(count(DISTINCT visit_key), 0)")} AS avg_invoice
+            FROM s GROUP BY shift""", p),
+        "by_source": (f"""WITH s AS ({base})
+            SELECT shift, src, {R("sum(item_price)")} AS sales, count(DISTINCT visit_key) AS invoices,
+                   count(DISTINCT phone) AS customers FROM s GROUP BY 1, 2""", p),
+        "by_branch": (f"""WITH s AS ({base})
+            SELECT coalesce(branch, '-') AS branch, shift, {R("sum(item_price)")} AS sales,
+                   count(DISTINCT visit_key) AS invoices FROM s GROUP BY 1, 2""", p),
+        "hourly": (f"""SELECT extract(hour FROM invoice_date)::int AS hour, {R("sum(item_price)")} AS sales,
+                   count(DISTINCT visit_key) AS invoices FROM sales
+            WHERE {w} AND invoice_date::time <> '00:00:00' GROUP BY 1 ORDER BY 1""", p),
+        "weekday": (f"""WITH s AS ({base})
+            SELECT extract(isodow FROM invoice_date)::int AS dow, shift,
+                   count(DISTINCT visit_key) AS invoices, {R("sum(item_price)")} AS sales
+            FROM s WHERE shift <> 'unknown' GROUP BY 1, 2""", p),
+        "customers": (f"""WITH s AS ({base}),
+            v AS (SELECT phone, shift, count(DISTINCT visit_key) AS n FROM s
+                  WHERE phone IS NOT NULL AND shift <> 'unknown' GROUP BY 1, 2),
+            fav AS (SELECT DISTINCT ON (phone) phone, shift FROM v ORDER BY phone, n DESC, shift)
+            SELECT shift, count(*) AS customers FROM fav GROUP BY 1""", p),
+        "top_items": (f"""WITH s AS ({base}),
+            t AS (SELECT shift, item_code AS code, mode() WITHIN GROUP (ORDER BY item_name) AS item,
+                         round(sum(quantity)::numeric, 0)::float8 AS units, {R("sum(item_price)")} AS sales
+                  FROM s WHERE shift <> 'unknown' AND coalesce(item_code, item_name) IS NOT NULL
+                    AND NOT {NOT_PRODUCT}
+                  GROUP BY 1, coalesce(item_code, 'n:' || item_name), item_code),
+            r AS (SELECT *, row_number() OVER (PARTITION BY shift ORDER BY units DESC NULLS LAST) AS rn FROM t)
+            SELECT shift, code, item, units, sales FROM r WHERE rn <= 8 ORDER BY shift, rn""", p),
+    }
+    res = parallel({k: q_rows(*q) for k, q in tasks.items()})
+    total_sales = sum((r["sales"] or 0) for r in res["totals"]) or 0
+    by = {r["shift"]: r for r in res["totals"]}
+    totals = []
+    for k in SHIFTS + ["unknown"]:
+        r = by.get(k) or {"shift": k, "sales": 0, "invoices": 0, "customers": 0, "units": 0, "avg_invoice": None}
+        r["share"] = round(100 * (r["sales"] or 0) / total_sales, 1) if total_sales else 0
+        if k != "unknown" or r["invoices"]:
+            totals.append(r)
+    src = {}
+    for r in res["by_source"]:
+        src.setdefault(r["shift"], {"shift": r["shift"]})
+        for m in ("sales", "invoices", "customers"):
+            src[r["shift"]][f"{r['src']}_{m}"] = r[m]
+    branches = {}
+    for r in res["by_branch"]:
+        b = branches.setdefault(r["branch"], {"branch": r["branch"], "sales": 0, "invoices": 0})
+        b[f"{r['shift']}_sales"], b[f"{r['shift']}_invoices"] = r["sales"], r["invoices"]
+        b["sales"] += r["sales"] or 0
+        b["invoices"] += r["invoices"] or 0
+    for b in branches.values():
+        known = sum(b.get(f"{k}_sales") or 0 for k in SHIFTS)
+        b["top_shift"] = max(SHIFTS, key=lambda k: b.get(f"{k}_sales") or 0) if known else None
+        for k in SHIFTS:
+            b[f"{k}_share"] = round(100 * (b.get(f"{k}_sales") or 0) / known, 1) if known else None
+    weekday = {}
+    for r in res["weekday"]:
+        d = weekday.setdefault(r["dow"], {"dow": r["dow"]})
+        d[r["shift"]] = r["invoices"]
+    top = {}
+    for r in res["top_items"]:
+        top.setdefault(r["shift"], []).append(r)
+    return {
+        "settings": {"morning": _hhmm(settings.get("shift_morning"), "08:30"),
+                     "evening": _hhmm(settings.get("shift_evening"), "16:30")},
+        "totals": totals,
+        "by_source": [src.get(k, {"shift": k}) for k in SHIFTS + ["unknown"] if k in src or k != "unknown"],
+        "by_branch": sorted(branches.values(), key=lambda b: -(b["sales"] or 0)),
+        "hourly": res["hourly"],
+        "weekday": [weekday[k] for k in sorted(weekday)],
+        "customers": {r["shift"]: r["customers"] for r in res["customers"]},
+        "top_items": top,
+        "unknown_time": (by.get("unknown") or {}).get("invoices", 0),
+    }
+
+
 # ====================================================================== products
 PRODUCT_SORTS = {"sales", "quantity", "invoices", "customers", "repeat_rate", "avg_price", "item",
-                 "last_sold", "share"}
+                 "code", "last_sold", "share", "branches", "avg_days_between"}
+
+# one product = one code (names differ between reports); lines without a code use the name
+PRODUCT_KEY = "coalesce('c:' || item_code, 'n:' || item_name)"
+
+
+def _product_cond(key: str) -> tuple[str, list]:
+    if key.startswith("c:"):
+        return "item_code = ?", [key[2:]]
+    if key.startswith("n:"):
+        return "item_code IS NULL AND item_name = ?", [key[2:]]
+    return "FALSE", []
 
 
 def products(f: Filters, *, q=None, sort="sales", desc=True, page=1, page_size=50,
              limit_all=False) -> dict:
-    """Per product: sales, units, invoices, unique buyers, repeat buyers, price, best branch."""
+    """Per product (by code): sales, units, invoices, buyers, repeat buyers, price, best branch,
+    re-purchase interval."""
     cur = db.cursor()
     w, p = f.where()
     cond, cp = "", []
@@ -766,39 +884,158 @@ def products(f: Filters, *, q=None, sort="sales", desc=True, page=1, page_size=5
         cp = [f"%{q}%"] * 3
     sort = sort if sort in PRODUCT_SORTS else "sales"
     sql = f"""
-      WITH s AS (SELECT coalesce(item_name, item_code) AS item, * FROM sales
-                 WHERE {w} AND coalesce(item_name, item_code) IS NOT NULL),
-           per_c AS (SELECT item, phone, count(DISTINCT visit_key) AS n FROM s
-                     WHERE phone IS NOT NULL GROUP BY 1, 2),
-           rep AS (SELECT item, count(*) AS buyers, count(*) FILTER (WHERE n >= 2) AS repeat_buyers,
-                          round(avg(n), 2)::float8 AS times_per_buyer
-                   FROM per_c GROUP BY item),
-           agg AS (SELECT item, min(item_code) AS code, mode() WITHIN GROUP (ORDER BY item_category)
-                          AS category, mode() WITHIN GROUP (ORDER BY material_group) AS material_group,
+      WITH s AS (SELECT {PRODUCT_KEY} AS key, * FROM sales
+                 WHERE {w} AND coalesce(item_code, item_name) IS NOT NULL),
+           per_c AS (SELECT key, phone, count(DISTINCT visit_key) AS n,
+                            CASE WHEN count(DISTINCT day) > 1
+                                 THEN (max(day) - min(day))::float8 / (count(DISTINCT day) - 1) END AS gap
+                     FROM s WHERE phone IS NOT NULL GROUP BY 1, 2),
+           rep AS (SELECT key, count(*) AS buyers, count(*) FILTER (WHERE n >= 2) AS repeat_buyers,
+                          round(avg(n), 2)::float8 AS times_per_buyer,
+                          round(percentile_cont(0.5) WITHIN GROUP (ORDER BY gap)::numeric, 0)::float8
+                            AS avg_days_between
+                   FROM per_c GROUP BY key),
+           br AS (SELECT key, branch, sum(quantity) AS u FROM s WHERE branch IS NOT NULL GROUP BY 1, 2),
+           topb AS (SELECT DISTINCT ON (key) key, branch AS top_branch FROM br ORDER BY key, u DESC NULLS LAST),
+           agg AS (SELECT key, min(s.item_code) AS code,
+                          coalesce(min(pc.item_name), mode() WITHIN GROUP (ORDER BY s.item_name)) AS item,
+                          coalesce(mode() WITHIN GROUP (ORDER BY s.item_category), min(pc.item_category))
+                            AS category,
+                          mode() WITHIN GROUP (ORDER BY s.material_group) AS material_group,
                           {R("sum(item_price)")} AS sales, sum(quantity) AS quantity,
-                          count(DISTINCT visit_key) AS invoices,
+                          count(DISTINCT visit_key) AS invoices, count(DISTINCT branch) AS branches,
                           {R("sum(item_price) / nullif(sum(quantity), 0)")} AS avg_price,
-                          mode() WITHIN GROUP (ORDER BY branch) AS top_branch,
                           min(day) AS first_sold, max(day) AS last_sold
-                   FROM s GROUP BY item),
-           t AS (SELECT agg.*, coalesce(rep.buyers, 0) AS customers,
+                   FROM s LEFT JOIN products pc ON pc.item_code = s.item_code GROUP BY key),
+           t AS (SELECT agg.*, topb.top_branch, coalesce(rep.buyers, 0) AS customers,
                         coalesce(rep.repeat_buyers, 0) AS repeat_buyers, rep.times_per_buyer,
+                        rep.avg_days_between,
                         {R("100.0 * rep.repeat_buyers / nullif(rep.buyers, 0)")} AS repeat_rate,
                         {R("100 * sales / nullif(sum(sales) OVER (), 0)")} AS share
-                 FROM agg LEFT JOIN rep USING (item))
+                 FROM agg LEFT JOIN rep USING (key) LEFT JOIN topb USING (key))
       SELECT *, count(*) OVER () AS _total FROM t {cond}
-      ORDER BY {sort} {'DESC' if desc else 'ASC'} NULLS LAST, item"""
+      ORDER BY {sort} {'DESC' if desc else 'ASC'} NULLS LAST, item, code"""
     sql += " LIMIT 1048000" if limit_all else \
         f" LIMIT {int(page_size)} OFFSET {int((page - 1) * page_size)}"
     rows = db.rows(cur, sql, p + cp)
     total = rows[0]["_total"] if rows else 0
     for r in rows:
         r.pop("_total", None)
-    by_category = db.rows(cur, f"""SELECT coalesce(item_category, material_group, '-') AS category,
-        {R("sum(item_price)")} AS sales, count(DISTINCT coalesce(item_name, item_code)) AS products,
-        count(DISTINCT phone) AS customers FROM sales WHERE {w}
-        GROUP BY 1 ORDER BY sales DESC LIMIT 30""", p) if page == 1 and not limit_all else []
-    return {"rows": rows, "total": total, "by_category": by_category}
+    extra = {}
+    if page == 1 and not limit_all:
+        extra = parallel({
+            "by_category": q_rows(f"""SELECT coalesce(item_category, material_group, '-') AS category,
+                {R("sum(item_price)")} AS sales, round(sum(quantity)::numeric, 0)::float8 AS units,
+                count(DISTINCT {PRODUCT_KEY}) AS products,
+                count(DISTINCT phone) AS customers FROM sales WHERE {w}
+                GROUP BY 1 ORDER BY sales DESC LIMIT 30""", p),
+            "names": q_one(f"""SELECT count(DISTINCT item_code) AS codes,
+                count(DISTINCT item_code) FILTER (WHERE item_name IS NULL AND NOT EXISTS
+                    (SELECT 1 FROM products pc WHERE pc.item_code = sales.item_code AND pc.item_name IS NOT NULL))
+                  AS codes_without_name,
+                count(*) FILTER (WHERE item_name IS NULL AND item_code IS NOT NULL) AS lines_without_name
+                FROM sales WHERE {w}""", p),
+        })
+    return {"rows": rows, "total": total, "by_category": extra.get("by_category", []),
+            "names": extra.get("names")}
+
+
+def product_detail(key: str, f: Filters, settings: dict) -> dict | None:
+    """Everything about one product: where, when (month, weekday, hour, shift), how often
+    customers come back for it, who buys it and what is bought with it."""
+    pc, pp = _product_cond(key)
+    w, p = f.where()
+    base = f"FROM sales WHERE {pc} AND {w}"
+    bp = pp + p
+    sh = shift_sql(settings)
+    tasks = {
+        "kpis": (f"""SELECT {R("sum(item_price)")} AS sales, round(sum(quantity)::numeric, 1)::float8 AS units,
+                count(DISTINCT visit_key) AS invoices, count(DISTINCT phone) AS customers,
+                count(DISTINCT branch) AS branches, count(DISTINCT day) AS days,
+                {R("sum(item_price) / nullif(sum(quantity), 0)")} AS avg_price,
+                round((sum(quantity) / nullif(count(DISTINCT visit_key), 0))::numeric, 2)::float8 AS units_per_invoice,
+                min(day) AS first_sold, max(day) AS last_sold,
+                min(item_code) AS code, mode() WITHIN GROUP (ORDER BY item_name) AS item,
+                mode() WITHIN GROUP (ORDER BY item_category) AS category,
+                mode() WITHIN GROUP (ORDER BY material_group) AS material_group,
+                mode() WITHIN GROUP (ORDER BY item_unit) AS unit {base}""", bp),
+        "names": (f"""SELECT item_name AS name, count(*) AS lines {base} AND item_name IS NOT NULL
+                GROUP BY 1 ORDER BY 2 DESC LIMIT 10""", bp),
+        "by_branch": (f"""SELECT coalesce(branch, '-') AS branch, {R("sum(item_price)")} AS sales,
+                round(sum(quantity)::numeric, 1)::float8 AS units, count(DISTINCT visit_key) AS invoices,
+                count(DISTINCT phone) AS customers, max(day) AS last_sold,
+                round((sum(quantity) / nullif(count(DISTINCT day), 0))::numeric, 2)::float8 AS units_per_day
+                {base} GROUP BY 1 ORDER BY units DESC NULLS LAST""", bp),
+        "monthly": (f"""SELECT to_char(day, 'YYYY-MM') AS month, {R("sum(item_price)")} AS sales,
+                round(sum(quantity)::numeric, 1)::float8 AS units, count(DISTINCT phone) AS customers
+                {base} GROUP BY 1 ORDER BY 1""", bp),
+        "weekday": (f"""SELECT extract(isodow FROM day)::int AS dow, round(sum(quantity)::numeric, 1)::float8 AS units,
+                {R("sum(item_price)")} AS sales {base} GROUP BY 1 ORDER BY 1""", bp),
+        "hourly": (f"""SELECT extract(hour FROM invoice_date)::int AS hour,
+                round(sum(quantity)::numeric, 1)::float8 AS units, count(DISTINCT visit_key) AS invoices
+                {base} AND invoice_date::time <> '00:00:00' GROUP BY 1 ORDER BY 1""", bp),
+        "shifts": (f"""SELECT {sh} AS shift, round(sum(quantity)::numeric, 1)::float8 AS units,
+                {R("sum(item_price)")} AS sales, count(DISTINCT visit_key) AS invoices
+                {base} GROUP BY 1""", bp),
+        "branch_shift": (f"""SELECT coalesce(branch, '-') AS branch, {sh} AS shift,
+                round(sum(quantity)::numeric, 1)::float8 AS units {base} GROUP BY 1, 2""", bp),
+        "intervals": (f"""WITH d AS (SELECT phone, day {base} AND phone IS NOT NULL GROUP BY 1, 2),
+                g AS (SELECT day - lag(day) OVER (PARTITION BY phone ORDER BY day) AS gap FROM d)
+            SELECT CASE WHEN gap <= 7 THEN 1 WHEN gap <= 14 THEN 2 WHEN gap <= 30 THEN 3
+                        WHEN gap <= 60 THEN 4 WHEN gap <= 90 THEN 5 ELSE 6 END AS bucket,
+                   count(*) AS n, round(percentile_cont(0.5) WITHIN GROUP (ORDER BY gap)::numeric, 0)::float8 AS median
+            FROM g WHERE gap IS NOT NULL GROUP BY 1 ORDER BY 1""", bp),
+        "interval": (f"""WITH d AS (SELECT phone, day {base} AND phone IS NOT NULL GROUP BY 1, 2),
+                g AS (SELECT day - lag(day) OVER (PARTITION BY phone ORDER BY day) AS gap FROM d)
+            SELECT round(percentile_cont(0.5) WITHIN GROUP (ORDER BY gap)::numeric, 0)::float8 AS median_days,
+                   round(avg(gap)::numeric, 1)::float8 AS avg_days, count(gap) AS repeats,
+                   (SELECT count(*) FROM (SELECT phone FROM d GROUP BY phone HAVING count(*) >= 2) x)
+                     AS repeat_customers FROM g""", bp),
+        "top_customers": (f"""SELECT phone, mode() WITHIN GROUP (ORDER BY name) AS name,
+                count(DISTINCT visit_key) AS purchases, round(sum(quantity)::numeric, 1)::float8 AS units,
+                {R("sum(item_price)")} AS sales, max(day) AS last_bought,
+                mode() WITHIN GROUP (ORDER BY branch) AS branch
+                {base} AND phone IS NOT NULL GROUP BY phone ORDER BY units DESC NULLS LAST, sales DESC LIMIT 25""", bp),
+        "together": (f"""WITH v AS (SELECT DISTINCT visit_key {base}),
+                o AS (SELECT {PRODUCT_KEY} AS key, min(item_code) AS code,
+                             mode() WITHIN GROUP (ORDER BY item_name) AS item,
+                             count(DISTINCT s.visit_key) AS invoices
+                      FROM sales s JOIN v USING (visit_key)
+                      WHERE {w} AND NOT ({pc})
+                        AND coalesce(item_code, item_name) IS NOT NULL AND NOT {NOT_PRODUCT}
+                      GROUP BY 1)
+            SELECT o.*, {R("100.0 * o.invoices / nullif((SELECT count(*) FROM v), 0)")} AS pct
+            FROM o ORDER BY invoices DESC LIMIT 15""", bp + p + pp),
+    }
+    res = parallel({k: q_rows(*q) for k, q in tasks.items()})
+    k = res["kpis"][0] if res["kpis"] else None
+    if not k or not k["invoices"]:
+        return None
+    if key.startswith("c:"):
+        cat = q_one("SELECT item_name, item_category, material_group, item_unit, source FROM products "
+                    "WHERE item_code = ?", [key[2:]])()
+        if cat:
+            k["item"] = cat["item_name"] or k["item"]
+            k["category"] = k["category"] or cat["item_category"]
+            k["catalogue"] = cat["source"]
+    k["key"] = key
+    k.update(res["interval"][0] if res["interval"] else {})
+    tot_units = sum((b["units"] or 0) for b in res["by_branch"]) or 0
+    for b in res["by_branch"]:
+        b["share"] = round(100 * (b["units"] or 0) / tot_units, 1) if tot_units else 0
+    bs = {}
+    for r in res["branch_shift"]:
+        bs.setdefault(r["branch"], {"branch": r["branch"]})[r["shift"]] = r["units"]
+    for r in res["top_customers"]:
+        r["cid"] = cid(r["phone"])
+    sh_by = {r["shift"]: r for r in res["shifts"]}
+    return {
+        "product": k, "names": res["names"], "by_branch": res["by_branch"], "monthly": res["monthly"],
+        "weekday": res["weekday"], "hourly": res["hourly"],
+        "shifts": [sh_by[s] for s in SHIFTS + ["unknown"] if s in sh_by],
+        "branch_shift": sorted(bs.values(), key=lambda r: -sum((r.get(s) or 0) for s in SHIFTS + ["unknown"])),
+        "intervals": res["intervals"], "top_customers": res["top_customers"], "together": res["together"],
+    }
 
 
 # ====================================================================== customer base (lists)
@@ -1266,7 +1503,9 @@ def customer_habits(phone: str, f: Filters) -> dict:
                round(100.0 * count(*) FILTER (WHERE stype ILIKE '%deliver%') / nullif(count(*), 0))::int
                  AS delivery_pct,
                count(*) FILTER (WHERE total < 0 OR stype = 'Return') AS returns,
-               mode() WITHIN GROUP (ORDER BY branch) AS fav_branch FROM v""", bp)
+               mode() WITHIN GROUP (ORDER BY branch) AS fav_branch,
+               mode() WITHIN GROUP (ORDER BY {shift_sql(None, "t")}) FILTER (WHERE t::time <> '00:00') AS fav_shift
+        FROM v""", bp)
     h["categories"] = db.rows(cur, f"""SELECT coalesce(item_category, material_group, '—') AS category,
         {R("sum(item_price)")} AS sales, count(DISTINCT visit_key) AS visits {base}
         GROUP BY 1 ORDER BY sales DESC LIMIT 8""", bp)

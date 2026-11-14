@@ -13,7 +13,8 @@ const Customers = lazy(() => import("./pages/Customers"));
 const CustomerProfile = lazy(() => import("./pages/CustomerProfile"));
 const Area = lazy(() => import("./pages/Area"));
 const Products = lazy(() => import("./pages/Products"));
-const CustomerBase = lazy(() => import("./pages/CustomerBase"));
+const ProductDetail = lazy(() => import("./pages/ProductDetail"));
+const Shifts = lazy(() => import("./pages/Shifts"));
 const Live = lazy(() => import("./pages/Live"));
 const DataCheck = lazy(() => import("./pages/DataCheck"));
 const Refills = lazy(() => import("./pages/Refills"));
@@ -37,7 +38,7 @@ function Guard({ perm, children }: { perm: string; children: ReactNode }) {
 function Home() {
   const { can } = useAuth();
   if (can("dashboard")) return <Dashboard />;
-  for (const [p, to] of [["live", "/live"], ["customers", "/customers"], ["recommendations", "/recommendations"], ["refills", "/refills"], ["insights", "/insights"], ["products", "/products"], ["import", "/import"], ["users", "/users"]]) {
+  for (const [p, to] of [["live", "/live"], ["customers", "/customers"], ["recommendations", "/recommendations"], ["refills", "/refills"], ["insights", "/insights"], ["products", "/products"], ["shifts", "/shifts"], ["customer_base", "/customers?tab=base"], ["import", "/import"], ["users", "/users"]]) {
     if (can(p)) return <Navigate to={to} replace />;
   }
   return <Navigate to="/account" replace />;
@@ -55,15 +56,17 @@ export default function App() {
           <Route element={<Layout />}>
             <Route index element={<Home />} />
             <Route path="insights" element={<Guard perm="insights"><Insights /></Guard>} />
-            <Route path="customers" element={<Guard perm="customers"><Customers view="customers" /></Guard>} />
+            <Route path="customers" element={<Customers view="customers" />} />
             <Route path="customers/:cid" element={<Guard perm="customers"><CustomerProfile /></Guard>} />
             <Route path="recommendations" element={<Guard perm="recommendations"><Customers view="recommendations" /></Guard>} />
             <Route path="business" element={<Guard perm="business"><Customers view="business" /></Guard>} />
             <Route path="refills" element={<Guard perm="refills"><Refills /></Guard>} />
             <Route path="data-check" element={<Guard perm="data_check"><DataCheck /></Guard>} />
             <Route path="live" element={<Guard perm="live"><Live /></Guard>} />
-            <Route path="customer-base" element={<Guard perm="customer_base"><CustomerBase /></Guard>} />
+            <Route path="customer-base" element={<Navigate to="/customers?tab=base" replace />} />
             <Route path="products" element={<Guard perm="products"><Products /></Guard>} />
+            <Route path="products/item" element={<Guard perm="products"><ProductDetail /></Guard>} />
+            <Route path="shifts" element={<Guard perm="shifts"><Shifts /></Guard>} />
             <Route path="area" element={<Guard perm="area"><Area /></Guard>} />
             <Route path="transactions" element={<Guard perm="transactions"><Transactions /></Guard>} />
             <Route path="ai" element={<Guard perm="ai"><AIAnalyst /></Guard>} />

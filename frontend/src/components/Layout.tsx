@@ -3,7 +3,7 @@ import { Link, NavLink, Outlet, useLocation, useNavigate } from "react-router-do
 import { useTranslation } from "react-i18next";
 import clsx from "clsx";
 import {
-  Activity, BarChart3, BellRing, BookOpen, BookUser, Bot, ChevronDown, DatabaseZap, Package, Search, Briefcase, FileClock, Globe, LayoutDashboard, LogOut, MapPin, Menu, PhoneCall,
+  Activity, BarChart3, BellRing, BookOpen, Bot, Clock3, ChevronDown, DatabaseZap, Package, Search, Briefcase, FileClock, Globe, LayoutDashboard, LogOut, MapPin, Menu, PhoneCall,
   Receipt, Settings, Sparkles, Upload, UserCog, UserRound, Users, X,
 } from "lucide-react";
 import { useAuth } from "../lib/auth";
@@ -22,7 +22,6 @@ const GROUPS_NAV: Group[] = [
   ] },
   { key: "customers", items: [
     { to: "/customers", key: "customers", perm: "customers", icon: Users },
-    { to: "/customer-base", key: "base", perm: "customer_base", icon: BookUser },
   ] },
   { key: "act", items: [
     { to: "/recommendations", key: "recommendations", perm: "recommendations", icon: PhoneCall },
@@ -32,6 +31,7 @@ const GROUPS_NAV: Group[] = [
     { to: "/insights", key: "insights", perm: "insights", icon: Sparkles },
     { to: "/business", key: "business", perm: "business", icon: Briefcase },
     { to: "/products", key: "products", perm: "products", icon: Package },
+    { to: "/shifts", key: "shifts", perm: "shifts", icon: Clock3 },
     { to: "/area", key: "area", perm: "area", icon: MapPin },
     { to: "/transactions", key: "transactions", perm: "transactions", icon: Receipt },
     { to: "/ai", key: "ai", perm: "ai", icon: Bot },
@@ -82,7 +82,8 @@ export default function Layout() {
     try { localStorage.setItem("cp_nav_closed", JSON.stringify(n)); } catch { /* */ }
     return n;
   });
-  const visible = GROUPS_NAV.map((g) => ({ ...g, items: g.items.filter((i) => !i.perm || can(i.perm)) }))
+  const allowed = (i: Item) => !i.perm || can(i.perm) || (i.perm === "customers" && can("customer_base"));
+  const visible = GROUPS_NAV.map((g) => ({ ...g, items: g.items.filter(allowed) }))
     .filter((g) => g.items.length);
   const q = find.trim().toLowerCase();
   const matches = (i: Item) => !q || `${t(`nav.${i.key}`)} ${t(`navHint.${i.key}`)}`.toLowerCase().includes(q);

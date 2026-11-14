@@ -8,7 +8,9 @@ import { useFilters } from "../lib/filters";
 import { fmtDate, fmtInt, fmtMoney, fmtNum, fmtPct } from "../lib/format";
 import FilterBar from "../components/FilterBar";
 import DataTable from "../components/DataTable";
-import { Card, ErrorBox, ExportButton, PageHeader } from "../components/ui";
+import { Link } from "react-router-dom";
+import { Card, ErrorBox, ExportButton, Notice, PageHeader } from "../components/ui";
+import { useAuth } from "../lib/auth";
 import { RankBars } from "../components/charts";
 
 export default function Products() {
@@ -26,6 +28,9 @@ export default function Products() {
   const res = useQuery({ queryKey: ["products", query], queryFn: () => api.get("/products", query), placeholderData: keepPreviousData });
   const [cats, setCats] = useState<any[]>([]);
   useEffect(() => { if (res.data?.by_category?.length) setCats(res.data.by_category); }, [res.data]);
+  const { can } = useAuth();
+  const [names, setNames] = useState<any>(null);
+  useEffect(() => { if (res.data?.names) setNames(res.data.names); }, [res.data]);
   const c = (k: string, extra = {}) => ({ key: k, label: t(`col.${k}`), sortable: true, ...extra });
   return (
     <>
@@ -33,12 +38,18 @@ export default function Products() {
         actions={<ExportButton path="/products" params={{ ...params, q, sort, desc }} />} />
       <FilterBar />
       <div className="space-y-5">
+        {names?.codes_without_name > 0 && (
+          <Notice kind="warning">
+            <div>{t("prod.namesMissing", { n: fmtInt(names.codes_without_name) })}</div>
+            <div className="mt-1">{t("prod.namesFix")} {can("import") && <Link to="/import" className="underline font-semibold">{t("nav.import")}</Link>}</div>
+          </Notice>
+        )}
         {cats.length > 0 && (
           <Card title={t("prod.byCategory")}>
             <RankBars data={cats.slice(0, 15)} label="category" value="sales" name={t("col.sales")} />
           </Card>
         )}
-        <Card help={t("prod.repeatHelp")}>
+        <Card help={`${t("prod.open")} ${t("prod.repeatHelp")}`}>
           <div className="relative mb-4">
             <Search size={16} className="absolute top-2.5 start-3 text-muted" />
             <input className="input ps-9" placeholder={t("prod.search")} value={text} onChange={(e) => setText(e.target.value)} />
@@ -46,9 +57,10 @@ export default function Products() {
           {res.error ? <ErrorBox error={res.error} /> : (
             <DataTable rows={res.data?.rows ?? []} total={res.data?.total} page={page} pageSize={50} onPage={setPage}
               sort={sort} desc={desc} onSort={(k, d) => { setSort(k); setDesc(d); }} loading={res.isFetching} maxHeight={640}
-              onRowClick={(r) => nav(`/transactions?q=${encodeURIComponent(r.item)}`)}
+              onRowClick={(r) => nav(`/products/item?key=${encodeURIComponent(r.key)}`)}
               columns={[
-                c("item", { className: "max-w-72 truncate font-medium" }),
+                c("code", { className: "font-mono text-xs whitespace-nowrap", render: (r: any) => r.code ?? "–" }),
+                c("item", { className: "max-w-80 truncate font-medium", render: (r: any) => r.item ?? <span className="text-muted italic font-normal">{t("prod.noName")}</span> }),
                 { key: "category", label: t("col.category"), render: (r: any) => r.category ?? r.material_group ?? "–" },
                 c("sales", { num: true, render: (r: any) => fmtMoney(r.sales) }),
                 c("share", { num: true, render: (r: any) => fmtPct(r.share) }),
@@ -59,7 +71,9 @@ export default function Products() {
                 c("repeat_rate", { num: true, render: (r: any) => fmtPct(r.repeat_rate) }),
                 { key: "times_per_buyer", label: t("col.times_per_buyer"), num: true, render: (r: any) => fmtNum(r.times_per_buyer) },
                 c("avg_price", { num: true, render: (r: any) => fmtMoney(r.avg_price) }),
+                c("avg_days_between", { num: true, render: (r: any) => (r.avg_days_between == null ? "–" : t("prod.days", { n: fmtInt(r.avg_days_between) })) }),
                 { key: "top_branch", label: t("col.top_branch") },
+                c("branches", { num: true, render: (r: any) => fmtInt(r.branches) }),
                 c("last_sold", { render: (r: any) => fmtDate(r.last_sold) }),
               ]} />
           )}

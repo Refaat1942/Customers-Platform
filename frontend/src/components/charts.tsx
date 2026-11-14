@@ -73,7 +73,7 @@ export function RankBars({ data, label, value, name, height, money = true, onCli
 }
 
 /** Two or more series stacked per category (e.g. new vs returning per month). */
-export function StackedBars({ data, x, series, height = 260 }: { data: any[]; x: string; series: { key: string; name: string }[]; height?: number }) {
+export function StackedBars({ data, x, series, height = 260, colors }: { data: any[]; x: string; series: { key: string; name: string }[]; height?: number; colors?: string[] }) {
   const { i18n } = useTranslation();
   const rtl = i18n.language === "ar";
   return (
@@ -85,9 +85,26 @@ export function StackedBars({ data, x, series, height = 260 }: { data: any[]; x:
         <Tooltip content={<TooltipBox money={false} />} cursor={{ fill: "rgba(0,0,0,0.04)" }} />
         <Legend iconType="square" iconSize={10} wrapperStyle={{ fontSize: 12 }} />
         {series.map((s, i) => (
-          <Bar key={s.key} dataKey={s.key} name={s.name} stackId="a" fill={SERIES[i]} stroke="#fff" strokeWidth={1}
+          <Bar key={s.key} dataKey={s.key} name={s.name} stackId="a" fill={(colors ?? SERIES)[i]} stroke="#fff" strokeWidth={1}
             radius={i === series.length - 1 ? [4, 4, 0, 0] : [0, 0, 0, 0]} maxBarSize={36} />
         ))}
+      </BarChart>
+    </ResponsiveContainer></div>
+  );
+}
+
+/** Vertical bars for an ordered axis (hours, weekdays, months). */
+export function Columns({ data, x, y, name, height = 240, money = false, color }: { data: any[]; x: string; y: string; name: string; height?: number; money?: boolean; color?: string }) {
+  const { i18n } = useTranslation();
+  const rtl = i18n.language === "ar";
+  return (
+    <div dir="ltr"><ResponsiveContainer width="100%" height={height}>
+      <BarChart data={data} margin={{ top: 8, right: 8, left: 8, bottom: 0 }}>
+        <CartesianGrid stroke={GRID} vertical={false} />
+        <XAxis dataKey={x} tick={AXIS} tickLine={false} axisLine={{ stroke: GRID }} reversed={rtl} minTickGap={4} />
+        <YAxis tick={AXIS} tickLine={false} axisLine={false} tickFormatter={fmtCompact} width={44} orientation={rtl ? "right" : "left"} />
+        <Tooltip content={<TooltipBox money={money} />} cursor={{ fill: "rgba(0,0,0,0.04)" }} />
+        <Bar dataKey={y} name={name} fill={color ?? BRAND} radius={[4, 4, 0, 0]} maxBarSize={34} />
       </BarChart>
     </ResponsiveContainer></div>
   );

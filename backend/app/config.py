@@ -38,6 +38,8 @@ BRANDING_DIR = DATA_DIR / "branding"
 BRANDING_DIR.mkdir(exist_ok=True)
 
 DEFAULT_SETTINGS = {
+    "shift_morning": "08:30",   # night = 00:00 -> morning start
+    "shift_evening": "16:30",   # morning -> evening start; evening -> midnight
     "active_days": 30,         # last visit within N days -> Active
     "attention_days": 60,      # within N days -> Needs Attention, older -> Inactive
     "high_value_spend": 10000,  # total spend >= N -> High Value

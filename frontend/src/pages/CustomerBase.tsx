@@ -9,7 +9,8 @@ import DataTable from "../components/DataTable";
 import { Badge, Card, Empty, ErrorBox, ExportButton, Kpi, MultiSelect, PageHeader, Spinner } from "../components/ui";
 import { RankBars, ShareBar, TrendChart } from "../components/charts";
 
-export default function CustomerBase() {
+/** Everyone in the uploaded customer lists. Shown as the 2nd tab of the Customers page. */
+export default function CustomerBase({ header }: { header?: (actions: React.ReactNode) => React.ReactNode }) {
   const { t } = useTranslation();
   const nav = useNavigate();
   const sum = useQuery({ queryKey: ["dir_summary"], queryFn: () => api.get("/directory/summary") });
@@ -35,8 +36,10 @@ export default function CustomerBase() {
 
   return (
     <>
-      <PageHeader title={t("base.title")} subtitle={t("base.subtitle")}
-        actions={<ExportButton path="/directory" params={{ ...query, page: undefined, page_size: undefined }} />} />
+      {(() => {
+        const actions = <ExportButton path="/directory" params={{ ...query, page: undefined, page_size: undefined }} />;
+        return header ? header(actions) : <PageHeader title={t("base.title")} subtitle={t("base.subtitle")} actions={actions} />;
+      })()}
       {sum.isLoading ? <Spinner /> : sum.error ? <ErrorBox error={sum.error} /> : !k?.total ? <Empty /> : (
         <div className="space-y-5">
           <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-4">

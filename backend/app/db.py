@@ -149,6 +149,18 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_secret TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_pending TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_enabled BOOLEAN NOT NULL DEFAULT FALSE;
 
+-- product catalogue: one row per item code (from a product list upload, or learnt from sales lines)
+CREATE TABLE IF NOT EXISTS products (
+    item_code TEXT PRIMARY KEY,
+    item_name TEXT,
+    item_category TEXT,
+    material_group TEXT,
+    item_unit TEXT,
+    source TEXT,                       -- 'file' = product list upload (wins), 'sales' = learnt
+    import_id INTEGER,
+    updated_at TIMESTAMP DEFAULT now()
+);
+
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE IF NOT EXISTS saved_mappings (signature TEXT PRIMARY KEY, mapping TEXT);
 """
@@ -246,11 +258,24 @@ def _build_indexes():
             if bad:  # an interrupted concurrent build leaves an invalid index behind
                 conn.execute("DROP INDEX CONCURRENTLY IF EXISTS sales_match_idx")
             conn.execute(MATCH_INDEX)
+            conn.execute("CREATE INDEX CONCURRENTLY IF NOT EXISTS sales_item_code_idx ON sales (item_code)")
             # invoice numbers are unique per branch: old file imports used the bare number
             n = conn.execute("""UPDATE sales SET visit_key = coalesce(branch, '') || '|' || invoice_no
                 WHERE invoice_no IS NOT NULL AND source IS NULL AND visit_key = invoice_no""").rowcount
             if n:
                 _log(f"invoice keys made branch-specific on {n} lines")
+                bump_version()
+            # sales types (Cash, Cards, Digital, Insurance...) that older imports stored as category
+            from .core.importer import TYPE_WORDS, refresh_catalogue
+            like = " OR ".join("lower(item_category) LIKE %s" for _ in TYPE_WORDS)
+            n = conn.execute(f"""UPDATE sales SET invoice_type = item_category, item_category = NULL
+                WHERE invoice_type IS NULL AND item_category IS NOT NULL AND ({like})""",
+                             [f"%{w}%" for w in TYPE_WORDS]).rowcount
+            if n:
+                _log(f"sales types moved out of category on {n} lines")
+                conn.execute(f"UPDATE products SET item_category = NULL WHERE source = 'sales' AND ({like})",
+                             [f"%{w}%" for w in TYPE_WORDS])
+            if refresh_catalogue(conn) or n:
                 bump_version()
     except Exception as e:  # noqa: BLE001 - only speeds things up
         _log(f"index build skipped: {e}")

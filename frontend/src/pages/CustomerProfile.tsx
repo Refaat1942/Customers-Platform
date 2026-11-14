@@ -141,8 +141,8 @@ function Purchases({ d, cid, params }: { d: any; cid: string; params: any }) {
           <input className="input ps-9" placeholder={t("prof.searchItems")} value={itemQ} onChange={(e) => setItemQ(e.target.value)} />
         </div>
         <DataTable rows={items} maxHeight={520} columns={[
-          { key: "item", label: t("col.item"), className: "max-w-72 truncate font-medium" },
-          { key: "code", label: t("col.code"), className: "font-mono text-xs" },
+          { key: "code", label: t("col.code"), className: "font-mono text-xs whitespace-nowrap", render: (r) => r.code ?? "–" },
+          { key: "item", label: t("col.item"), className: "max-w-72 truncate font-medium", render: (r) => r.item ?? <span className="text-muted italic font-normal">{t("prod.noName")}</span> },
           { key: "category", label: t("col.category") },
           { key: "quantity", label: t("col.quantity"), num: true, render: (r) => fmtNum(r.quantity) },
           { key: "times", label: t("col.times"), num: true, render: (r) => fmtInt(r.times) },
@@ -180,7 +180,7 @@ function VisitLines({ cid, visitKey, params }: { cid: string; visitKey: string; 
           {lines.map((x, i) => (
             <tr key={i} className="border-t border-line">
               <td className="td font-mono text-xs">{x.item_code ?? "–"}</td>
-              <td className="td">{x.item_name ?? "–"}</td>
+              <td className="td">{x.item_name ?? <span className="text-muted italic">{t("prod.noName")}</span>}</td>
               <td className="td text-xs">{x.item_category ?? x.material_group ?? "–"}</td>
               <td className="td text-end num">{fmtNum(x.quantity)}</td>
               <td className="td text-xs">{x.item_unit ?? "–"}</td>
@@ -267,6 +267,7 @@ function Habits({ h, trend }: { h: any; trend: any }) {
   const cells: [string, any][] = [
     [t("habits.day"), h.fav_dow ? days[h.fav_dow - 1] : "–"],
     [t("habits.hour"), h.fav_hour != null ? `${String(h.fav_hour).padStart(2, "0")}:00` : "–"],
+    [t("shift.fav"), h.fav_shift ? t(`shift.${h.fav_shift}`) : "–"],
     [t("habits.itemsPerVisit"), fmtNum(h.items_per_visit)],
     [t("habits.delivery"), h.delivery_pct != null ? `${h.delivery_pct}%` : "–"],
     [t("habits.returns"), fmtInt(h.returns)],

@@ -30,7 +30,7 @@ export default function Dashboard() {
           <div className="font-semibold mb-1">{t("base.noSalesTitle")}</div>
           <div>{t("base.noSales", { n: fmtInt(meta.directory_customers) })}</div>
           <div className="flex gap-2 mt-3">
-            <Link to="/customer-base" className="btn-primary">{t("base.openBase")}</Link>
+            <Link to="/customers?tab=base" className="btn-primary">{t("base.openBase")}</Link>
             <Link to="/import" className="btn-ghost">{t("base.uploadSales")}</Link>
           </div>
         </Notice></div>

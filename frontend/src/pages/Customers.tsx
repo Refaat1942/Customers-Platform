@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState, type ReactNode } from "react";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { useNavigate, useSearchParams } from "react-router-dom";
@@ -9,13 +9,41 @@ import { fmtDate, fmtInt, fmtMoney, fmtNum } from "../lib/format";
 import FilterBar from "../components/FilterBar";
 import FilterTotals from "../components/FilterTotals";
 import DataTable, { type Column } from "../components/DataTable";
-import { Badge, ErrorBox, ExportButton, MultiSelect, PageHeader } from "../components/ui";
+import { Badge, ErrorBox, ExportButton, MultiSelect, Notice, PageHeader, Spinner, Tabs } from "../components/ui";
+import { useAuth } from "../lib/auth";
+
+const CustomerBase = lazy(() => import("./CustomerBase"));
+
+/** One Customers page with two tabs: people who bought (from sales) and everyone in the
+ *  uploaded customer lists. Each tab follows its own permission. */
+export default function Customers({ view }: { view: View }) {
+  const { t } = useTranslation();
+  const { can } = useAuth();
+  const [sp, setSp] = useSearchParams();
+  if (view !== "customers") return <CustomerList view={view} />;
+  const tabs = [
+    ...(can("customers") ? [{ key: "bought" as const, label: t("cust.tabBought") }] : []),
+    ...(can("customer_base") ? [{ key: "base" as const, label: t("cust.tabBase") }] : []),
+  ];
+  if (!tabs.length) return <Notice kind="warning">{t("app.noAccess")}</Notice>;
+  const tab = tabs.find((x) => x.key === sp.get("tab"))?.key ?? tabs[0].key;
+  const setTab = (k: string) => { const n = new URLSearchParams(); if (k !== "bought") n.set("tab", k); setSp(n, { replace: true }); };
+  const header = (actions: ReactNode) => (
+    <>
+      <PageHeader title={t("nav.customers")} subtitle={t("cust.tabsHelp")} actions={actions} />
+      {tabs.length > 1 && <Tabs value={tab} onChange={setTab} items={tabs} />}
+    </>
+  );
+  return tab === "base"
+    ? <Suspense fallback={<Spinner />}><CustomerBase header={header} /></Suspense>
+    : <CustomerList view="customers" header={header} />;
+}
 
 type View = "customers" | "business" | "recommendations";
 const FLAGS = ["", "high_value", "loyal", "due_soon", "overdue", "multi_branch", "invalid_phone"];
 const SEGMENTS = ["champions", "loyal", "potential", "new", "promising", "cant_lose", "at_risk", "hibernating", "lost"];
 
-export default function Customers({ view }: { view: View }) {
+function CustomerList({ view, header }: { view: View; header?: (actions: ReactNode) => ReactNode }) {
   const { t } = useTranslation();
   const { params, key } = useFilters();
   const nav = useNavigate();
@@ -94,8 +122,10 @@ export default function Customers({ view }: { view: View }) {
 
   return (
     <>
-      <PageHeader title={titles[view][0]} subtitle={titles[view][1]}
-        actions={<ExportButton path="/customers" params={{ ...query, page: undefined, page_size: undefined }} />} />
+      {(() => {
+        const actions = <ExportButton path="/customers" params={{ ...query, page: undefined, page_size: undefined }} />;
+        return header ? header(actions) : <PageHeader title={titles[view][0]} subtitle={titles[view][1]} actions={actions} />;
+      })()}
       <FilterBar />
       <FilterTotals />
       <div className="card p-4">

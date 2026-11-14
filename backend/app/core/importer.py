@@ -28,6 +28,7 @@ SEASONS = {12: "Winter", 1: "Winter", 2: "Winter", 3: "Spring", 4: "Spring", 5: 
 
 IMPORT_MODES = ("merge", "replace_period", "append_new", "replace_all")
 CUSTOMER_MODES = ("upsert", "replace_all")
+PRODUCT_MODES = ("upsert", "replace_all")
 
 TEXT_FIELDS = ["name", "branch", "address", "district", "invoice_no", "invoice_type",
                "item_code", "item_name", "material_group", "item_category", "item_unit"]
@@ -288,13 +289,27 @@ UNIT_WORDS = {"EA", "PAK", "PACK", "PCK", "BOX", "BX", "PC", "PCS", "BTL", "BOTT
               "STR", "STRIP", "KG", "G", "GM", "ML", "L", "LTR", "CAN", "TUBE", "SACHET", "AMP",
               "VIAL", "UNIT", "CRT", "CTN", "DZ", "PR", "علبة", "شريط", "قطعة", "زجاجة"}
 TYPE_WORDS = ("deliver", "cash", "insur", "credit", "return", "takeaway", "pick", "online", "walk",
+              "digital", "card", "visa", "master", "wallet", "instapay", "fawry", "talabat", "vodafone",
+              "كارت", "فيزا", "محفظة", "ديجيتال", "انستاباي",
               "contract", "توصيل", "نقد", "تأمين", "آجل", "مرتجع")
+
+
+def is_sales_type(v) -> bool:
+    v = str(v or "").strip().lower()
+    return bool(v) and any(w in v for w in TYPE_WORDS)
 
 
 def infer_fields(df: pd.DataFrame, m: dict, prof: dict) -> dict:
     """Fill fields that have no column yet by looking at the VALUES (needed for files without
     a header row, or with unusual titles). Never changes a column that is already chosen."""
     m = dict(m)
+    # a "category" column that really holds sales types (Cash, Cards, Digital, Insurance...)
+    cat = m.get("item_category")
+    if cat in df.columns and not m.get("invoice_type"):
+        v = df[cat].dropna().astype(str).str.strip().str.lower()
+        v = v[v != ""]
+        if len(v) and v.nunique() <= 15 and v.map(is_sales_type).mean() >= 0.6:
+            m["invoice_type"], m["item_category"] = cat, None
     used = {v for v in m.values() if v}
     free = [c for c in df.columns if c not in used and prof.get(c, {}).get("n")]
     phone = m.get("phone")
@@ -321,8 +336,24 @@ def infer_fields(df: pd.DataFrame, m: dict, prof: dict) -> dict:
             "type": float(txt.str.lower().map(lambda v: any(w in v for w in TYPE_WORDS)).mean()),
             "same_prev": float(same_prev), "const_phone": const_per_phone,
             "len_std": float(txt.str.len().std() or 0) if n > 1 else 0.0,
+            "const_inv": None,
             "decimal": float((num.dropna() % 1 != 0).mean()) if num.notna().any() else 0,
         }
+
+    # invoice-level columns (sales type, branch, customer) never change inside one invoice;
+    # product columns (category, name, code) do
+    inv_col = m.get("invoice_no")
+    for c in stats:
+        try:
+            keys = df[inv_col].astype(str) if inv_col in df.columns else (
+                df[phone].astype(str) + "|" + df[m["invoice_date"]].astype(str)
+                if phone in df.columns and m.get("invoice_date") in df.columns else None)
+            if keys is not None:
+                g = pd.DataFrame({"k": keys, "v": df[c].astype(str)}).groupby("k")["v"].nunique()
+                multi = g[g.index.isin(keys[keys.duplicated(keep=False)])]
+                stats[c]["const_inv"] = float((multi <= 1).mean()) if len(multi) else None
+        except Exception:  # noqa: BLE001
+            pass
 
     def take(field, cands):
         cands = [c for c in cands if c not in used]
@@ -334,7 +365,7 @@ def infer_fields(df: pd.DataFrame, m: dict, prof: dict) -> dict:
     st = stats
     take("invoice_time", [c for c in by("time") if st[c]["time"] >= 0.8])
     take("item_unit", [c for c in by("unit") if st[c]["unit"] >= 0.6])
-    take("invoice_type", [c for c in by("type") if st[c]["type"] >= 0.6 and st[c]["distinct"] <= 15])
+
     # quantity: small whole numbers
     take("quantity", [c for c in by("num") if st[c]["num"] >= 0.95 and st[c]["int"] >= 0.9
                       and st[c]["median"] is not None and 0 < st[c]["median"] <= 10])
@@ -342,6 +373,13 @@ def infer_fields(df: pd.DataFrame, m: dict, prof: dict) -> dict:
     take("invoice_no", [c for c in by("same_prev") if st[c]["same_prev"] >= 0.2 and st[c]["uniq"] < 0.9
                         and st[c]["digit"] >= 0.8 and st[c]["len"] <= 20 and st[c]["distinct"] > 1
                         and prof[c]["phone"] < 0.3 and st[c]["num"] >= 0.5])
+    # sales type: known words (cash, delivery, cards, digital...) or a few words that stay the
+    # same for the whole invoice
+    take("invoice_type", [c for c in by("type") if st[c]["distinct"] <= 15 and (
+        st[c]["type"] >= 0.6 or (st[c]["type"] >= 0.3 and (st[c]["const_inv"] or 0) >= 0.95)
+        or ((st[c]["const_inv"] or 0) >= 0.98 and st[c]["distinct"] <= 8 and st[c]["digit"] < 0.2
+            and st[c]["alpha"] >= 0.9 and st[c]["len"] <= 20 and st[c]["unit"] < 0.3
+            and (st[c]["const_phone"] or 0) < 0.95))])
     # amount: numbers of varying size (codes have a fixed number of digits)
     if not m.get("item_price"):
         amounts = [c for c in st if c not in used and st[c]["num"] >= 0.9 and prof[c]["phone"] < 0.3
@@ -374,6 +412,7 @@ def infer_fields(df: pd.DataFrame, m: dict, prof: dict) -> dict:
                        and st[c]["decimal"] == 0])
     # category: short codes / words with few values
     take("item_category", [c for c in by("distinct", rev=False) if st[c]["distinct"] <= 300 and st[c]["len"] <= 30
+                           and (st[c]["const_inv"] is None or st[c]["const_inv"] < 0.98 or st[c]["distinct"] > 15)
                            and st[c]["alpha"] >= 0.8 and st[c]["unit"] < 0.3 and st[c]["type"] < 0.3])
     return m
 
@@ -386,6 +425,9 @@ def detect_kind(sales_map: dict, cust_map: dict) -> tuple[str, str]:
                                                  "district", "area", "region"))
     if cust_map.get("phone") and has_details:
         return "customers", "no_dates_amounts"
+    if sales_map.get("item_code") and sales_map.get("item_name") and not sales_map.get("phone") \
+            and not sales_map.get("invoice_date"):
+        return "products", "codes_names"
     return "sales", "unknown"
 
 
@@ -460,8 +502,9 @@ def analyse_sheet(path: Path, sheet: str | None) -> dict:
     cols = list(df.columns)
     if df.empty or not cols:
         return {"sheet": sheet, "kind": "empty", "kind_reason": "empty", "columns": cols,
-                "mappings": {"sales": {}, "customers": {}}, "mapping": {}, "sample": [], "rows": 0}
+                "mappings": {"sales": {}, "customers": {}, "products": {}}, "mapping": {}, "sample": [], "rows": 0}
     maps = suggest_mappings(cols, df)
+    maps["products"] = {f: maps["sales"].get(f) for f in PRODUCT_COLS}
     kind, reason = detect_kind(maps["sales"], maps["customers"])
     if reason == "unknown":
         kind = "skip"
@@ -495,7 +538,7 @@ def preview(path: Path, sheet: str | None = None) -> dict:
                 all(re.fullmatch(r"Column [A-Z]+", c) for c in info["columns"]):
             info["rows"] += 1  # no header row: the first row is data too
         sheets.append(info)
-    first = next((x for x in sheets if x["kind"] in ("sales", "customers")), sheets[0])
+    first = next((x for x in sheets if x["kind"] in ("sales", "customers", "products")), sheets[0])
     return {
         "sheets": names,
         "sheets_info": sheets,
@@ -503,9 +546,10 @@ def preview(path: Path, sheet: str | None = None) -> dict:
         "sheet": first["sheet"], "columns": first["columns"], "kind": first["kind"],
         "kind_reason": first["kind_reason"], "mappings": first["mappings"],
         "mapping": first["mapping"], "sample": first["sample"],
-        "fields": {"sales": FIELDS, "customers": CUSTOMER_FIELDS},
-        "required": {"sales": REQUIRED_FIELDS, "customers": CUSTOMER_REQUIRED},
-        "modes": {"sales": list(IMPORT_MODES), "customers": list(CUSTOMER_MODES)},
+        "fields": {"sales": FIELDS, "customers": CUSTOMER_FIELDS, "products": PRODUCT_COLS},
+        "required": {"sales": REQUIRED_FIELDS, "customers": CUSTOMER_REQUIRED, "products": ["item_code"]},
+        "modes": {"sales": list(IMPORT_MODES), "customers": list(CUSTOMER_MODES),
+                  "products": list(PRODUCT_MODES)},
     }
 
 
@@ -539,12 +583,13 @@ def run_jobs(jobs: list[dict], path: Path):
     try:
         _import_lock.acquire()
         # customer lists first, so the sales imported next get names/districts from them
-        for j in sorted(jobs, key=lambda j: 0 if j["kind"] == "customers" else 1):
+        order = {"products": 0, "customers": 1}
+        for j in sorted(jobs, key=lambda j: order.get(j["kind"], 2)):
             if j["import_id"] in _cancelled:
                 db.cursor().execute("UPDATE imports SET status='failed', message='Cancelled by user', "
                                     "finished_at=now() WHERE id=? AND status='running'", [j["import_id"]])
                 continue
-            fn = run_customer_import if j["kind"] == "customers" else run_import
+            fn = {"customers": run_customer_import, "products": run_product_import}.get(j["kind"], run_import)
             log(f"#{j['import_id']} started ({j['kind']}, sheet={j['sheet']}, mode={j['mode']})")
             fn(j["import_id"], path, j["mapping"], j["mode"], j["sheet"], cleanup=False)
             st = db.one(db.cursor(), "SELECT status, message, rows_imported, rows_skipped FROM imports "
@@ -902,6 +947,10 @@ def run_import(import_id: int, path: Path, mapping: dict, mode: str, sheet: str 
                 [stats["rows_read"], imported, skipped, int(replaced), stats["invalid_phones"],
                  stats["invalid_dates"], dmin, dmax, import_id])
         cur.execute("ANALYZE sales")
+        try:  # this file's names fill lines of other files that carry only the code
+            refresh_catalogue(cur)
+        except Exception as e:  # noqa: BLE001
+            log(f"catalogue refresh skipped: {e}")
         db.bump_version()
     except Exception as e:  # noqa: BLE001 - reported to the user
         if not isinstance(e, Cancelled):
@@ -922,12 +971,116 @@ DIRECTORY_COLS = ["phone", "phone_valid", "name", "first_name", "last_name", "ad
 
 
 def enrich_sales(cur, table: str = "sales"):
-    """Use the customer list to fill/correct names and districts of sales rows (by phone)."""
+    """Use the customer list to fill/correct names and districts of sales rows (by phone),
+    and the product catalogue to fill product names (by code)."""
+    if table == "sales":
+        refresh_catalogue(cur)
+    else:
+        cur.execute(f"""UPDATE {table} s SET item_name = p.item_name,
+                item_category = coalesce(s.item_category, p.item_category),
+                material_group = coalesce(s.material_group, p.material_group)
+            FROM products p WHERE s.item_code = p.item_code AND s.item_name IS NULL
+              AND p.item_name IS NOT NULL""")
     cur.execute(f"""UPDATE {table} s SET district = d.district FROM customer_directory d
                     WHERE s.phone = d.phone AND d.district IS NOT NULL
                       AND s.district IS DISTINCT FROM d.district""")
     cur.execute(f"""UPDATE {table} s SET name = d.name FROM customer_directory d
                     WHERE s.phone = d.phone AND s.name IS NULL AND d.name IS NOT NULL""")
+
+
+def refresh_catalogue(conn) -> int:
+    """Learn code -> name/category from sales lines that have both, then fill the lines that have
+    only a code (some files carry the name, others only the code). A product list upload wins."""
+    cur = conn if isinstance(conn, db.Cursor) else db.Cursor(conn)
+    cur.execute("""INSERT INTO products (item_code, item_name, item_category, material_group, item_unit, source)
+        SELECT item_code, mode() WITHIN GROUP (ORDER BY item_name),
+               mode() WITHIN GROUP (ORDER BY item_category), mode() WITHIN GROUP (ORDER BY material_group),
+               mode() WITHIN GROUP (ORDER BY item_unit), 'sales'
+        FROM sales WHERE item_code IS NOT NULL AND item_name IS NOT NULL GROUP BY item_code
+        ON CONFLICT (item_code) DO UPDATE SET
+            item_name = coalesce(products.item_name, EXCLUDED.item_name),
+            item_category = coalesce(products.item_category, EXCLUDED.item_category),
+            material_group = coalesce(products.material_group, EXCLUDED.material_group),
+            item_unit = coalesce(products.item_unit, EXCLUDED.item_unit)
+        WHERE products.item_name IS NULL OR products.item_category IS NULL""")
+    n = cur.execute("""UPDATE sales s SET item_name = coalesce(s.item_name, p.item_name),
+            item_category = coalesce(s.item_category, p.item_category),
+            material_group = coalesce(s.material_group, p.material_group)
+        FROM products p WHERE s.item_code = p.item_code
+          AND ((s.item_name IS NULL AND p.item_name IS NOT NULL)
+               OR (s.item_category IS NULL AND p.item_category IS NOT NULL))""").cur.rowcount
+    if n:
+        log(f"product names / categories filled on {n} lines from the product catalogue")
+    return n
+
+
+PRODUCT_COLS = ["item_code", "item_name", "item_category", "material_group", "item_unit"]
+
+
+def run_product_import(import_id: int, path: Path, mapping: dict, mode: str,
+                       sheet: str | None = None, cleanup: bool = True):
+    """Product list (code + name + category...): fills the catalogue and every sales line by code."""
+    conn = psycopg.connect(config.DATABASE_URL, autocommit=True)
+    cur = db.Cursor(conn)
+    try:
+        if not mapping.get("item_code"):
+            raise ValueError("Missing required column: item_code")
+        _progress(cur, import_id, "reading", 1)
+        rows, read = {}, 0
+        for chunk, total in iter_chunks(path, sheet):
+            _check_cancel(import_id)
+            read += len(chunk)
+            cols = {f: list(_clean_text(chunk[mapping[f]])) if mapping.get(f) and mapping[f] in chunk.columns
+                    else [None] * len(chunk) for f in PRODUCT_COLS}
+            for r in zip(*(cols[f] for f in PRODUCT_COLS)):
+                if r[0]:
+                    rows[r[0]] = r
+            _progress(cur, import_id, "cleaning", 5 + 70 * min(read / max(total, 1), 1), rows_read=read)
+        _progress(cur, import_id, "saving", 80)
+        with conn.transaction():
+            if mode == "replace_all":
+                cur.execute("DELETE FROM products WHERE source = 'file'")
+            before = cur.execute("SELECT count(*) FROM products WHERE item_code = ANY(?)",
+                                 [list(rows)]).fetchone()[0]
+            cur.execute("CREATE TEMP TABLE IF NOT EXISTS _pl (LIKE products) ON COMMIT DROP")
+            with cur.copy("COPY _pl (item_code, item_name, item_category, material_group, item_unit) "
+                          "FROM STDIN") as cp:
+                for r in rows.values():
+                    cp.write_row(r)
+            cur.execute(f"""INSERT INTO products (item_code, item_name, item_category, material_group,
+                    item_unit, source, import_id)
+                SELECT item_code, item_name, item_category, material_group, item_unit, 'file', {int(import_id)}
+                FROM _pl ON CONFLICT (item_code) DO UPDATE SET
+                    item_name = coalesce(EXCLUDED.item_name, products.item_name),
+                    item_category = coalesce(EXCLUDED.item_category, products.item_category),
+                    material_group = coalesce(EXCLUDED.material_group, products.material_group),
+                    item_unit = coalesce(EXCLUDED.item_unit, products.item_unit),
+                    source = 'file', import_id = EXCLUDED.import_id, updated_at = now()""")
+            _progress(cur, import_id, "saving", 90)
+            # a product list is the reference: its names replace the names on sales lines
+            filled = cur.execute("""UPDATE sales s SET item_name = p.item_name,
+                    item_category = coalesce(p.item_category, s.item_category),
+                    material_group = coalesce(p.material_group, s.material_group)
+                FROM _pl p WHERE s.item_code = p.item_code AND p.item_name IS NOT NULL
+                  AND (s.item_name IS DISTINCT FROM p.item_name
+                       OR (p.item_category IS NOT NULL AND s.item_category IS DISTINCT FROM p.item_category))
+                """).cur.rowcount
+            cur.execute("""UPDATE imports SET status='done', stage='finished', progress=100, finished_at=now(),
+                   rows_read=?, rows_imported=?, rows_skipped=?, rows_replaced=?, message=? WHERE id=?""",
+                        [read, len(rows), read - len(rows), int(before),
+                         f"{filled} sales lines updated", import_id])
+        log(f"#{import_id} product list: {len(rows)} products, {filled} sales lines updated")
+        db.bump_version()
+    except Exception as e:  # noqa: BLE001 - reported to the user
+        if not isinstance(e, Cancelled):
+            import traceback
+            log(f"#{import_id} FAILED: {e}\n{traceback.format_exc()}")
+        cur.execute("UPDATE imports SET status='failed', message=?, finished_at=now() "
+                    "WHERE id=?", [str(e)[:1000], import_id])
+    finally:
+        conn.close()
+        if cleanup:
+            path.unlink(missing_ok=True)
 
 
 def build_customer_frame(raw: pd.DataFrame, mapping: dict) -> tuple[pd.DataFrame, dict]:

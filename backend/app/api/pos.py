@@ -213,6 +213,10 @@ def save_invoices(conn, invoices: list[PosInvoice], default_branch: str | None) 
                            WHERE s.ext_key = ANY(?) AND s.phone = d.phone""", [keys])
             cur.execute("UPDATE sales SET district = 'Unknown' WHERE ext_key = ANY(?) "
                         "AND district IS NULL", [keys])
+            cur.execute("""UPDATE sales s SET item_name = p.item_name,
+                               item_category = coalesce(s.item_category, p.item_category)
+                           FROM products p WHERE s.ext_key = ANY(?) AND s.item_code = p.item_code
+                             AND s.item_name IS NULL AND p.item_name IS NOT NULL""", [keys])
     return {"accepted": len(keys), "lines": len(rows), "rejected": errors}
 
 

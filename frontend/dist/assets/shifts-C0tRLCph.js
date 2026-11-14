@@ -1,0 +1,1 @@
+var e=[`night`,`morning`,`evening`],t={night:`#6250d6`,morning:`#eda100`,evening:`#2a78d6`,unknown:`#b8bdb6`},n=(e,t)=>{let n=t?.morning??`08:30`,r=t?.evening??`16:30`;return e===`night`?`00:00 – ${n}`:e===`morning`?`${n} – ${r}`:e===`evening`?`${r} – 24:00`:``};export{e as n,n as r,t};
