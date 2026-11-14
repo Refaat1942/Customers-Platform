@@ -38,6 +38,14 @@ export default function FilterBar() {
       )}
       <MultiSelect label={t("filters.season")} options={meta?.seasons ?? []} value={f.season} onChange={(v) => set({ season: v })}
         render={(s) => t(`seasons.${s}`)} />
+      <div>
+        <span className="label">{t("filters.compare")}</span>
+        <select className="input min-w-44" value={f.compare ?? "last_year"} onChange={(e) => set({ compare: e.target.value as "last_year" | "previous" })}
+          title={t("filters.compareHelp")}>
+          <option value="last_year">{t("filters.compareLastYear")}</option>
+          <option value="previous">{t("filters.comparePrevious")}</option>
+        </select>
+      </div>
       {active ? <button className="btn-ghost" onClick={reset}><RotateCcw size={14} /> {t("filters.reset")}</button> : null}
     </div>
   );

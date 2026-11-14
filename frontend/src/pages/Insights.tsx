@@ -8,7 +8,7 @@ import { useFilters } from "../lib/filters";
 import { fmtDate, fmtInt, fmtMoney, fmtNum, fmtPct } from "../lib/format";
 import FilterBar from "../components/FilterBar";
 import DataTable from "../components/DataTable";
-import { Badge, Card, Empty, ErrorBox, ExportButton, Kpi, PageHeader, PrintButton, Spinner } from "../components/ui";
+import { Badge, Card, Empty, ErrorBox, ExportButton, HelpTip, Kpi, PageHeader, PrintButton, Spinner } from "../components/ui";
 import { seqColor, seqText, StackedBars } from "../components/charts";
 
 const ALERT_ICON = { danger: OctagonAlert, warning: AlertTriangle, info: Info, success: CheckCircle2 } as const;
@@ -72,7 +72,7 @@ export default function Insights() {
           )}
 
           {d.trend?.length > 0 && (
-            <Card title={t("trend.title")}>
+            <Card title={<>{t("trend.title")} <HelpTip term="trend" /></>}>
               <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-7 gap-3">
                 {["growing", "stable", "declining", "stopped", "new", "back", "none"].map((k) => {
                   const r = d.trend.find((x: any) => x.trend === k);
@@ -88,7 +88,7 @@ export default function Insights() {
             </Card>
           )}
 
-          <Card title={t("ins.rfm")} help={t("ins.rfmHelp")}>
+          <Card title={<>{t("ins.rfm")} <HelpTip term="rfm" /></>} help={t("ins.rfmHelp")}>
             <div className="grid sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-3">
               {d.rfm.map((s: any) => (
                 <button key={s.segment} onClick={() => nav(`/customers?segment=${s.segment}`)}
@@ -109,7 +109,7 @@ export default function Insights() {
           </Card>
 
           <div className="grid lg:grid-cols-2 gap-5">
-            <Card title={t("ins.churn")} help={t("ins.churnHelp")}>
+            <Card title={<>{t("ins.churn")} <HelpTip term="churn_risk" /></>} help={t("ins.churnHelp")}>
               <div className="space-y-3">
                 {["high", "medium", "low"].map((k) => {
                   const c = churnOf(k);
@@ -134,19 +134,29 @@ export default function Insights() {
             </Card>
           </div>
 
-          <Card title={t("ins.growth")}
-            help={d.periods?.current?.[0] ? `${fmtDate(d.periods.current[0])} – ${fmtDate(d.periods.current[1])}  vs  ${fmtDate(d.periods.previous[0])} – ${fmtDate(d.periods.previous[1])}` : undefined}>
-            <DataTable rows={d.branch_growth} columns={[
-              { key: "branch", label: t("col.branch") },
-              { key: "sales", label: t("col.sales"), num: true, render: (r) => fmtMoney(r.sales) },
-              { key: "prev_sales", label: t("col.prev_sales"), num: true, render: (r) => fmtMoney(r.prev_sales) },
-              { key: "sales_change", label: t("col.sales_change"), num: true, render: (r) => <Change v={r.sales_change} /> },
-              { key: "customers", label: t("col.customers"), num: true, render: (r) => fmtInt(r.customers) },
-              { key: "customers_change", label: t("col.customers_change"), num: true, render: (r) => <Change v={r.customers_change} /> },
-            ]} />
-          </Card>
+          {(() => {
+            const cur = d.periods?.current ?? [], prv = d.periods?.previous ?? [];
+            const rng = (a: string, b: string) => (a ? `${fmtDate(a)} – ${fmtDate(b)}` : "");
+            const curL = rng(cur[0], cur[1]), prvL = rng(prv[0], prv[1]);
+            return (
+              <Card title={<>{t("ins.growth")} <HelpTip term="growth" /></>}
+                help={t(d.compare === "previous" ? "ins.growthHelpPrev" : "ins.growthHelpYear", { cur: curL, prev: prvL })}>
+                <DataTable rows={d.branch_growth} title={t("ins.growth")} columns={[
+                  { key: "branch", label: t("col.branch") },
+                  { key: "sales", label: `${t("col.sales")} · ${curL}`, num: true, render: (r) => fmtMoney(r.sales) },
+                  { key: "prev_sales", label: `${t("col.sales")} · ${prvL}`, num: true, render: (r) => fmtMoney(r.prev_sales) },
+                  { key: "sales_change", label: t("col.sales_change"), num: true,
+                    render: (r) => (r.prev_sales ? <Change v={r.sales_change} /> : <Badge kind="active">{t("ins.newBranch")}</Badge>) },
+                  { key: "customers", label: `${t("col.customers")} · ${curL}`, num: true, render: (r) => fmtInt(r.customers) },
+                  { key: "prev_customers", label: `${t("col.customers")} · ${prvL}`, num: true, render: (r) => fmtInt(r.prev_customers) },
+                  { key: "customers_change", label: t("col.customers_change"), num: true,
+                    render: (r) => (r.prev_customers ? <Change v={r.customers_change} /> : <span className="text-muted">–</span>) },
+                ]} />
+              </Card>
+            );
+          })()}
 
-          <Card title={t("ins.basket")} help={t("ins.basketHelp")}>
+          <Card title={<>{t("ins.basket")} <HelpTip term="basket" /></>} help={t("ins.basketHelp")}>
             <DataTable rows={d.basket} maxHeight={420} columns={[
               { key: "item_a", label: t("ins.itemA") },
               { key: "item_b", label: t("ins.itemB") },
@@ -157,7 +167,7 @@ export default function Insights() {
           </Card>
 
           <div className="grid lg:grid-cols-2 gap-5">
-            <Card title={t("ins.cohorts")} help={t("ins.cohortHelp")}>
+            <Card title={<>{t("ins.cohorts")} <HelpTip term="cohort" /></>} help={t("ins.cohortHelp")}>
               {d.cohorts.length ? (
                 <div className="overflow-auto">
                   <table className="text-xs border-separate border-spacing-0.5">

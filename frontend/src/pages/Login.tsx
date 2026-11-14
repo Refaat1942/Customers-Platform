@@ -1,21 +1,10 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { BarChart3, BellRing, Eye, EyeOff, Globe, Loader2, Lock, ShieldCheck, Sparkles, User, Users } from "lucide-react";
 import { useAuth } from "../lib/auth";
 import { useBranding } from "../lib/branding";
 
 const REMEMBER_KEY = "cp_last_username";
-
-function BrandLogo({ size }: { size: number }) {
-  const b = useBranding();
-  const [broken, setBroken] = useState(false);
-  useEffect(() => setBroken(false), [b.logo_url]);
-  if (b.logo_url && !broken) {
-    return <img src={b.logo_url} alt={b.app_name} onError={() => setBroken(true)}
-      style={{ maxHeight: size, maxWidth: size * 2.2 }} className="object-contain" />;
-  }
-  return <div style={{ height: size, width: size }} className="rounded-2xl bg-white/15 text-white grid place-items-center"><BarChart3 size={size * 0.55} /></div>;
-}
 
 export default function Login() {
   const { t, i18n } = useTranslation();
@@ -29,12 +18,15 @@ export default function Login() {
   const [caps, setCaps] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [needCode, setNeedCode] = useState(false);
+  const [code, setCode] = useState("");
   const ar = i18n.language === "ar";
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault(); setBusy(true); setErr(null);
     try {
-      await login(u.trim(), p);
+      const r = await login(u.trim(), p, needCode ? code : undefined);
+      if (r === "code") { setNeedCode(true); setBusy(false); return; }
       try { remember ? localStorage.setItem(REMEMBER_KEY, u.trim()) : localStorage.removeItem(REMEMBER_KEY); } catch { /* */ }
     } catch (x) { setErr((x as Error).message); }
     setBusy(false);
@@ -54,24 +46,28 @@ export default function Login() {
         style={{ background: "linear-gradient(140deg, var(--brand, #1b5e20) 0%, color-mix(in srgb, var(--brand, #1b5e20) 65%, black) 100%)" }}>
         <div className="absolute -top-24 -end-24 size-96 rounded-full bg-white/5" />
         <div className="absolute -bottom-32 -start-20 size-[28rem] rounded-full bg-white/5" />
-        <div className="relative flex items-center gap-4">
-          <div className="rounded-2xl bg-white p-3 shadow-lg"><BrandLogo size={56} /></div>
-          <div>
-            <div className="text-2xl font-bold">{b.app_name}</div>
-            <div className="text-white/75 text-sm">{t("login.subtitle")}</div>
+        <div className="relative flex-1 flex flex-col items-center justify-center text-center">
+          <div className="logo-float">
+            <div className="logo-hero rounded-[2rem] bg-white p-6 grid place-items-center" style={{ minWidth: 168, minHeight: 168 }}>
+              <BrandLogoLight size={132} />
+            </div>
           </div>
-        </div>
-        <div className="relative max-w-md">
-          <h2 className="text-3xl font-bold leading-tight">{t("login.headline")}</h2>
-          <p className="text-white/75 mt-3">{t("login.tagline")}</p>
-          <ul className="mt-8 space-y-4">
-            {features.map((f) => (
-              <li key={f.text} className="flex items-center gap-3">
-                <span className="size-9 rounded-xl bg-white/15 grid place-items-center shrink-0"><f.icon size={18} /></span>
-                <span className="text-white/90">{f.text}</span>
-              </li>
-            ))}
-          </ul>
+          <div className="fade-up mt-8" style={{ animationDelay: ".25s" }}>
+            <div className="text-4xl font-bold tracking-tight">{b.app_name}</div>
+            <div className="text-white/75 mt-1">{t("login.subtitle")}</div>
+          </div>
+          <div className="fade-up mt-10 max-w-md text-start" style={{ animationDelay: ".45s" }}>
+            <h2 className="text-2xl font-bold leading-tight">{t("login.headline")}</h2>
+            <p className="text-white/75 mt-2">{t("login.tagline")}</p>
+            <ul className="mt-6 space-y-3">
+              {features.map((f) => (
+                <li key={f.text} className="flex items-center gap-3">
+                  <span className="size-9 rounded-xl bg-white/15 grid place-items-center shrink-0"><f.icon size={18} /></span>
+                  <span className="text-white/90">{f.text}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
         </div>
         <div className="relative text-xs text-white/60 flex items-center gap-2"><ShieldCheck size={14} /> {t("login.secure")}</div>
       </div>
@@ -80,13 +76,30 @@ export default function Login() {
       <div className="flex flex-col items-center justify-center p-6">
         <div className="w-full max-w-sm">
           <div className="lg:hidden flex flex-col items-center text-center mb-8">
-            <div className="rounded-2xl bg-white p-3 shadow-sm border border-line" style={{ background: "white" }}>
-              <div style={{ filter: "none" }}><BrandLogoLight size={64} /></div>
+            <div className="logo-float">
+              <div className="logo-side rounded-[1.75rem] bg-white p-4 shadow-lg border border-line grid place-items-center" style={{ minWidth: 120, minHeight: 120 }}>
+                <BrandLogoLight size={96} />
+              </div>
             </div>
             <h1 className="text-2xl font-bold mt-4 text-brand">{b.app_name}</h1>
             <p className="text-sm text-muted">{t("login.subtitle")}</p>
           </div>
 
+          {needCode ? (
+            <form onSubmit={submit} className="space-y-4">
+              <div className="size-12 rounded-xl bg-brand-soft text-brand grid place-items-center"><ShieldCheck size={24} /></div>
+              <h2 className="text-2xl font-bold">{t("tfa.loginTitle")}</h2>
+              <p className="text-sm text-muted">{t("tfa.loginHint", { app: b.app_name })}</p>
+              <input autoFocus inputMode="numeric" autoComplete="one-time-code" maxLength={7} placeholder="123 456"
+                className="input text-center text-2xl tracking-[0.4em] font-mono py-3" value={code}
+                onChange={(e) => setCode(e.target.value.replace(/[^\d ]/g, ""))} />
+              {err && <div className="rounded-lg border border-red-200 bg-red-50 text-bad text-sm px-3 py-2">{err}</div>}
+              <button type="submit" className="btn-primary w-full justify-center py-3 text-base" disabled={busy || code.replace(/\D/g, "").length !== 6}>
+                {busy && <Loader2 size={18} className="animate-spin" />} {t("tfa.verify")}
+              </button>
+              <button type="button" className="text-sm text-muted hover:text-ink cursor-pointer" onClick={() => { setNeedCode(false); setCode(""); setErr(null); }}>← {t("tfa.back")}</button>
+            </form>
+          ) : (<>
           <h2 className="text-2xl font-bold">{t("login.welcome")}</h2>
           <p className="text-sm text-muted mt-1 mb-6">{t("login.hint")}</p>
 
@@ -122,6 +135,7 @@ export default function Login() {
               {busy && <Loader2 size={18} className="animate-spin" />} {t("login.submit")}
             </button>
           </form>
+          </>)}
 
           <div className="flex items-center justify-between mt-8 text-sm text-muted">
             <button className="flex items-center gap-2 hover:text-ink cursor-pointer" onClick={() => i18n.changeLanguage(ar ? "en" : "ar")}>

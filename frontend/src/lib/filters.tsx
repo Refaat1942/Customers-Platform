@@ -8,6 +8,7 @@ export type Preset = "all" | "7d" | "30d" | "90d" | "month" | "lastMonth" | "yea
 export type FilterState = {
   preset: Preset; date_from: string; date_to: string;
   branch: string[]; type: string[]; district: string[]; season: string[];
+  compare?: "last_year" | "previous";
 };
 
 export type Meta = {
@@ -84,9 +85,10 @@ export function FiltersProvider({ children }: { children: ReactNode }) {
     const params: Params = {
       date_from: f.date_from || undefined, date_to: f.date_to || undefined,
       branch: f.branch, type: f.type, district: f.district, season: f.season,
+      compare: f.compare ?? "last_year",
     };
     return {
-      f, meta, params, key: [f.date_from, f.date_to, f.branch, f.type, f.district, f.season],
+      f, meta, params, key: [f.date_from, f.date_to, f.branch, f.type, f.district, f.season, f.compare ?? "last_year"],
       set: (patch) => setF((s) => {
         const n = { ...s, ...patch };
         if (patch.preset && patch.preset !== "custom") [n.date_from, n.date_to] = presetRange(patch.preset, meta?.date_max ?? null);

@@ -69,6 +69,7 @@ export default function Settings() {
         </Card>
 
         <BrandingCard />
+        <SecurityCard />
         <PosCard />
       </div>
     </>
@@ -182,6 +183,28 @@ function PosCard() {
           ]} />
         </div>
       )}
+    </Card>
+  );
+}
+
+function SecurityCard() {
+  const { t } = useTranslation();
+  const qc = useQueryClient();
+  const q = useQuery({ queryKey: ["settings"], queryFn: () => api.get<any>("/settings") });
+  const [msg, setMsg] = useState<{ kind: "success" | "danger"; text: string } | null>(null);
+  const on = !!q.data?.require_2fa;
+  const toggle = async () => {
+    setMsg(null);
+    try { await api.put("/settings/security", { require_2fa: !on }); qc.invalidateQueries({ queryKey: ["settings"] }); setMsg({ kind: "success", text: t("app.saved") }); }
+    catch (e) { setMsg({ kind: "danger", text: (e as Error).message }); }
+  };
+  return (
+    <Card title={t("tfa.security")}>
+      <label className="flex items-start gap-3 cursor-pointer">
+        <input type="checkbox" className="accent-brand size-5 mt-0.5" checked={on} onChange={toggle} />
+        <span><span className="font-medium">{t("tfa.requireAll")}</span><span className="block text-sm text-muted">{t("tfa.requireAllHelp")}</span></span>
+      </label>
+      {msg && <div className="mt-3"><Notice kind={msg.kind}>{msg.text}</Notice></div>}
     </Card>
   );
 }

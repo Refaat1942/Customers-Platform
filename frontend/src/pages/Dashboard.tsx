@@ -6,7 +6,7 @@ import { api } from "../lib/api";
 import { useFilters } from "../lib/filters";
 import { fmtDate, fmtInt, fmtMoney, fmtPct } from "../lib/format";
 import FilterBar from "../components/FilterBar";
-import { Card, Empty, ErrorBox, ExportButton, Kpi, Notice, PageHeader, PrintButton, Spinner } from "../components/ui";
+import { Card, Empty, ErrorBox, ExportButton, HelpTip, Kpi, Notice, PageHeader, PrintButton, Spinner } from "../components/ui";
 import { RankBars, ShareBar, TrendChart } from "../components/charts";
 import DataTable from "../components/DataTable";
 
@@ -38,6 +38,9 @@ export default function Dashboard() {
       <FilterBar />
       {q.isLoading ? <Spinner /> : q.error ? <ErrorBox error={q.error} onRetry={() => q.refetch()} /> : !d || d.kpis.lines === 0 ? <Empty /> : (
         <div className="space-y-5">
+          {prev?.date_from && (
+            <div className="text-xs text-muted -mb-2">{t("kpi.comparedWith")}: <b>{fmtDate(prev.date_from)} – {fmtDate(prev.date_to)}</b> <HelpTip term="growth" /></div>
+          )}
           <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-4">
             <Kpi label={t("kpi.sales")} value={fmtInt(d.kpis.total_sales)} change={change(d.kpis.total_sales, prev?.total_sales)} />
             <Kpi label={t("kpi.customers")} value={fmtInt(d.kpis.customers)} change={change(d.kpis.customers, prev?.customers)} />

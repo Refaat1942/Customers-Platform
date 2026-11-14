@@ -9,7 +9,7 @@ import { useFilters } from "../lib/filters";
 import { fmtDate, fmtInt, fmtMoney, fmtNum } from "../lib/format";
 import FilterBar from "../components/FilterBar";
 import DataTable from "../components/DataTable";
-import { Badge, Card, ErrorBox, ExportButton, Kpi, PageHeader } from "../components/ui";
+import { Badge, Card, ErrorBox, ExportButton, HelpTip, Kpi, PageHeader } from "../components/ui";
 
 const STATUSES = ["due_soon", "overdue", "lapsed", "ok"] as const;
 const KIND: Record<string, string> = { due_soon: "attention", overdue: "inactive", lapsed: "unknown", ok: "active" };
@@ -34,7 +34,7 @@ export default function Refills() {
 
   return (
     <>
-      <PageHeader title={t("refill.title")} subtitle={t("refill.subtitle")}
+      <PageHeader title={<>{t("refill.title")} <HelpTip term="refill" /></> as any} subtitle={t("refill.subtitle")}
         actions={<ExportButton path="/refills" params={{ ...query, page: undefined, page_size: undefined }} />} />
       <FilterBar />
       {res.error ? <ErrorBox error={res.error} onRetry={() => res.refetch()} /> : (

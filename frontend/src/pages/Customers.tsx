@@ -20,7 +20,7 @@ export default function Customers({ view }: { view: View }) {
   const { params, key } = useFilters();
   const nav = useNavigate();
   const [sp, setSp] = useSearchParams();
-  const [qText, setQText] = useState("");
+  const [qText, setQText] = useState(() => new URLSearchParams(window.location.search).get("q") ?? "");
   const [q, setQ] = useState("");
   const [page, setPage] = useState(1);
   const [sort, setSort] = useState(view === "recommendations" ? "priority" : "total_spent");
@@ -36,6 +36,7 @@ export default function Customers({ view }: { view: View }) {
   };
 
   useEffect(() => { const h = setTimeout(() => setQ(qText.trim()), 350); return () => clearTimeout(h); }, [qText]);
+  useEffect(() => { const v = sp.get("q"); if (v !== null && v !== qText) setQText(v); }, [sp.get("q")]); // eslint-disable-line
   useEffect(() => setPage(1), [q, flag, status.join(), segment.join(), churn.join(), trend.join(), sort, desc, ...key]); // eslint-disable-line
 
   const query = { ...params, q, flag: flag || undefined, status, segment, churn, trend, sort, desc, page, page_size: 50, view };

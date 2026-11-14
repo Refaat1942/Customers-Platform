@@ -650,3 +650,14 @@ def test_export_any_table(client):
     r = client.post("/api/export/table", json={"title": "Branch growth", "columns": ["Branch", "Sales"],
                                                "rows": [["CA20", 13763690.47], ["CA21", 11448187.15]], "lang": "ar"})
     assert r.status_code == 200 and r.content[:2] == b"PK"
+
+
+def test_growth_periods_are_clear(client):
+    ins = client.get("/api/insights", params={"date_from": "2026-01-01", "date_to": "2026-10-31"}).json()
+    assert ins["periods"]["current"] == ["2026-01-01", "2026-10-31"]
+    assert ins["periods"]["previous"] == ["2025-01-01", "2025-10-31"]   # same dates last year
+    ins = client.get("/api/insights", params={"date_from": "2026-10-01", "date_to": "2026-10-31", "compare": "previous"}).json()
+    assert ins["periods"]["previous"] == ["2026-08-31", "2026-09-30"]   # same number of days just before
+    allt = client.get("/api/insights").json()["periods"]
+    c0, c1 = allt["current"]; p0, p1 = allt["previous"]
+    assert c0[5:] == p0[5:] and c1[5:] == p1[5:] and int(c1[:4]) - int(p1[:4]) == 1  # last 30 days vs a year before

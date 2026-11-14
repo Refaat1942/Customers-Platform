@@ -42,3 +42,20 @@ body { background: var(--color-surface); color: var(--color-ink); }
   main { padding: 0 !important; }
   .card { box-shadow: none; break-inside: avoid; }
 }
+
+/* ---------------------------------------------------------------- logo animations */
+@keyframes logo-in { from { opacity: 0; transform: scale(.8) translateY(10px); } to { opacity: 1; transform: none; } }
+@keyframes logo-float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-8px); } }
+@keyframes logo-glow {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(255, 255, 255, .35), 0 20px 45px -12px rgba(0, 0, 0, .35); }
+  50% { box-shadow: 0 0 0 18px rgba(255, 255, 255, 0), 0 26px 50px -12px rgba(0, 0, 0, .4); }
+}
+@keyframes fade-up { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: none; } }
+.logo-hero { animation: logo-in .7s cubic-bezier(.2, .8, .2, 1) both, logo-glow 3.2s ease-in-out 1s infinite; }
+.logo-float { animation: logo-float 4.5s ease-in-out .8s infinite; }
+.fade-up { animation: fade-up .6s ease-out both; }
+.logo-side { animation: logo-in .6s cubic-bezier(.2, .8, .2, 1) both; transition: transform .25s ease; }
+.logo-side:hover { transform: scale(1.06) rotate(-2deg); }
+@media (prefers-reduced-motion: reduce) {
+  .logo-hero, .logo-float, .fade-up, .logo-side { animation: none !important; transition: none !important; }
+}

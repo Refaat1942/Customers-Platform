@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { Fragment, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { Lock, Pencil, Plus, Trash2 } from "lucide-react";
@@ -10,8 +10,8 @@ import DataTable from "../components/DataTable";
 import { Badge, Card, ErrorBox, Modal, MultiSelect, Notice, PageHeader, Spinner, Tabs } from "../components/ui";
 
 type Role = { name: string; description: string | null; permissions: string[]; builtin: boolean; users: number };
-type Perm = { key: string; en: string; ar: string };
-type U = { id: number; username: string; full_name: string | null; role: string; branches: string[]; language: string; active: boolean; created_at?: string };
+type Perm = { key: string; en: string; ar: string; group?: string };
+type U = { id: number; username: string; full_name: string | null; role: string; branches: string[]; language: string; active: boolean; created_at?: string; two_factor?: boolean };
 
 export default function Users() {
   const { t } = useTranslation();
@@ -49,10 +49,13 @@ function UsersTab() {
         { key: "branches", label: t("users.branches"), render: (r) => r.branches.length ? r.branches.join(", ") : <span className="text-muted">{t("users.allBranches")}</span> },
         { key: "language", label: t("users.language"), render: (r) => (r.language === "ar" ? "العربية" : "English") },
         { key: "active", label: t("users.active"), render: (r) => r.active ? <Badge kind="active">{t("app.yes")}</Badge> : <Badge kind="inactive">{t("app.no")}</Badge> },
+        { key: "two_factor", label: "2FA", render: (r) => r.two_factor ? <Badge kind="active">{t("tfa.on")}</Badge> : <span className="text-muted text-xs">{t("tfa.off")}</span> },
         { key: "created_at", label: t("audit.time"), render: (r) => fmtDate(r.created_at) },
         { key: "x", label: "", render: (r) => (
           <span className="flex gap-3">
             <button className="text-muted hover:text-ink cursor-pointer" onClick={() => setEdit(r)}><Pencil size={15} /></button>
+            {r.two_factor && <button className="text-xs text-warn hover:underline cursor-pointer" title={t("tfa.reset")}
+              onClick={async () => { if (confirm(t("tfa.resetConfirm"))) { await api.post(`/users/${r.id}/reset-2fa`); qc.invalidateQueries({ queryKey: ["users"] }); } }}>{t("tfa.reset")}</button>}
             {r.id !== me?.id && <button className="text-bad cursor-pointer" onClick={() => remove(r)}><Trash2 size={15} /></button>}
           </span>) },
       ]} />
@@ -162,8 +165,11 @@ function RolesTab() {
             </tr>
           </thead>
           <tbody>
-            {permissions.map((p) => (
-              <tr key={p.key} className="border-t border-line hover:bg-surface/60">
+            {permissions.map((p, i) => (<Fragment key={p.key}>
+              {p.group && p.group !== permissions[i - 1]?.group && (
+                <tr className="bg-surface/70"><td colSpan={roles.length + 1} className="px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-muted">{t(`navGroup.${p.group}`)}</td></tr>
+              )}
+              <tr className="border-t border-line hover:bg-surface/60">
                 <td className="td">{i18n.language === "ar" ? p.ar : p.en}</td>
                 {roles.map((r) => (
                   <td key={r.name} className="td text-center">
@@ -173,11 +179,11 @@ function RolesTab() {
                   </td>
                 ))}
               </tr>
-            ))}
+            </Fragment>))}
           </tbody>
         </table>
       </div>
-      <p className="text-xs text-muted mt-2">{t("users.builtinAdmin")}</p>
+      <p className="text-xs text-muted mt-2">{t("users.builtinAdmin")} · {t("users.matrixHelp")}</p>
       {newRole && (
         <Modal title={t("users.newRole")} onClose={() => setNewRole(null)}>
           <div className="space-y-4">

@@ -592,9 +592,13 @@ def insights(f: Filters, settings: dict) -> dict:
     w, p = f.where()
     ref = reference_date(cur, f)
     sw, sp = f.scope_only().where()
-    prev = previous_filters(cur, f)
-    cur_f = f if (f.date_from and f.date_to) else replace(
-        f, date_from=prev.date_to + timedelta(days=1) if prev.date_to else None, date_to=ref)
+    # the period being judged: the selected dates, or the last 30 days of data
+    if f.date_from and f.date_to:
+        cur_f = f
+    else:
+        end = f.date_to or ref
+        cur_f = replace(f, date_from=f.date_from or (end - timedelta(days=29) if end else None), date_to=end)
+    prev = previous_filters(cur, cur_f)
     cw, cwp = cur_f.where()
     pw, pwp = prev.where()
 

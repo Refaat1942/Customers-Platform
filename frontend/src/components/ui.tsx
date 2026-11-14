@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
+import { Link } from "react-router-dom";
 import clsx from "clsx";
 import { AlertTriangle, Check, ChevronDown, Download, Info, Loader2, Printer, TrendingDown, TrendingUp, X } from "lucide-react";
 import { download, type Params } from "../lib/api";
 import { useAuth } from "../lib/auth";
 
-export function PageHeader({ title, subtitle, actions }: { title: string; subtitle?: string; actions?: ReactNode }) {
+export function PageHeader({ title, subtitle, actions }: { title: ReactNode; subtitle?: string; actions?: ReactNode }) {
   return (
     <div className="flex flex-wrap items-end justify-between gap-3 mb-5">
       <div>
@@ -36,12 +37,22 @@ export function Card({ title, help, actions, children, className, pad = true }: 
   );
 }
 
-export function Kpi({ label, value, sub, change, icon }: { label: string; value: string; sub?: string; change?: number | null; icon?: ReactNode }) {
+/** Small "?" that opens the Glossary at the explanation of a term. */
+export function HelpTip({ term }: { term: string }) {
+  const { t } = useTranslation();
+  const text = t(`glossary.terms.${term}.short`, { defaultValue: "" });
+  return (
+    <Link to={`/glossary#${term}`} title={text || t("glossary.open")} onClick={(e) => e.stopPropagation()}
+      className="inline-grid place-items-center size-4 rounded-full border border-current text-[10px] font-bold text-muted hover:text-brand align-middle ms-1 no-print">?</Link>
+  );
+}
+
+export function Kpi({ label, value, sub, change, icon, term }: { label: string; value: string; sub?: string; change?: number | null; icon?: ReactNode; term?: string }) {
   const { t } = useTranslation();
   return (
     <div className="card p-4">
       <div className="flex items-center justify-between text-muted text-xs font-semibold">
-        <span>{label}</span>{icon}
+        <span>{label}{term && <HelpTip term={term} />}</span>{icon}
       </div>
       <div className="text-2xl font-bold mt-1.5 num truncate" title={value}>{value}</div>
       {change != null && isFinite(change) && (

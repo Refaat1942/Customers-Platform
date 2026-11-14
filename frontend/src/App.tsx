@@ -17,6 +17,7 @@ const CustomerBase = lazy(() => import("./pages/CustomerBase"));
 const Live = lazy(() => import("./pages/Live"));
 const DataCheck = lazy(() => import("./pages/DataCheck"));
 const Refills = lazy(() => import("./pages/Refills"));
+const Glossary = lazy(() => import("./pages/Glossary"));
 const Transactions = lazy(() => import("./pages/Transactions"));
 const AIAnalyst = lazy(() => import("./pages/AIAnalyst"));
 const Import = lazy(() => import("./pages/Import"));
@@ -24,6 +25,7 @@ const UsersPage = lazy(() => import("./pages/Users"));
 const SettingsPage = lazy(() => import("./pages/Settings"));
 const Audit = lazy(() => import("./pages/Audit"));
 const Account = lazy(() => import("./pages/Account"));
+const ForcedTwoFactor = lazy(() => import("./pages/Account").then((m) => ({ default: m.ForcedTwoFactor })));
 
 function Guard({ perm, children }: { perm: string; children: ReactNode }) {
   const { can } = useAuth();
@@ -35,7 +37,7 @@ function Guard({ perm, children }: { perm: string; children: ReactNode }) {
 function Home() {
   const { can } = useAuth();
   if (can("dashboard")) return <Dashboard />;
-  for (const [p, to] of [["customers", "/customers"], ["recommendations", "/recommendations"], ["insights", "/insights"], ["import", "/import"], ["users", "/users"]]) {
+  for (const [p, to] of [["live", "/live"], ["customers", "/customers"], ["recommendations", "/recommendations"], ["refills", "/refills"], ["insights", "/insights"], ["products", "/products"], ["import", "/import"], ["users", "/users"]]) {
     if (can(p)) return <Navigate to={to} replace />;
   }
   return <Navigate to="/account" replace />;
@@ -45,6 +47,7 @@ export default function App() {
   const { user, ready } = useAuth();
   if (!ready) return <Spinner />;
   if (!user) return <Routes><Route path="*" element={<Login />} /></Routes>;
+  if (user.two_factor_required) return <Suspense fallback={<Spinner />}><ForcedTwoFactor /></Suspense>;
   return (
     <FiltersProvider>
       <Suspense fallback={<Spinner />}>
@@ -56,11 +59,11 @@ export default function App() {
             <Route path="customers/:cid" element={<Guard perm="customers"><CustomerProfile /></Guard>} />
             <Route path="recommendations" element={<Guard perm="recommendations"><Customers view="recommendations" /></Guard>} />
             <Route path="business" element={<Guard perm="business"><Customers view="business" /></Guard>} />
-            <Route path="refills" element={<Guard perm="recommendations"><Refills /></Guard>} />
-            <Route path="data-check" element={<Guard perm="import"><DataCheck /></Guard>} />
-            <Route path="live" element={<Guard perm="dashboard"><Live /></Guard>} />
-            <Route path="customer-base" element={<Guard perm="customers"><CustomerBase /></Guard>} />
-            <Route path="products" element={<Guard perm="business"><Products /></Guard>} />
+            <Route path="refills" element={<Guard perm="refills"><Refills /></Guard>} />
+            <Route path="data-check" element={<Guard perm="data_check"><DataCheck /></Guard>} />
+            <Route path="live" element={<Guard perm="live"><Live /></Guard>} />
+            <Route path="customer-base" element={<Guard perm="customer_base"><CustomerBase /></Guard>} />
+            <Route path="products" element={<Guard perm="products"><Products /></Guard>} />
             <Route path="area" element={<Guard perm="area"><Area /></Guard>} />
             <Route path="transactions" element={<Guard perm="transactions"><Transactions /></Guard>} />
             <Route path="ai" element={<Guard perm="ai"><AIAnalyst /></Guard>} />
@@ -69,6 +72,7 @@ export default function App() {
             <Route path="settings" element={<Guard perm="settings"><SettingsPage /></Guard>} />
             <Route path="audit" element={<Guard perm="audit"><Audit /></Guard>} />
             <Route path="account" element={<Account />} />
+            <Route path="glossary" element={<Glossary />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Route>
         </Routes>
