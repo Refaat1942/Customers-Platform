@@ -43,6 +43,7 @@ DEFAULT_SETTINGS = {
     "high_value_spend": 10000,  # total spend >= N -> High Value
     "loyalty_spend": 10000,     # loyal if spend >= N ...
     "loyalty_visits": 5,        # ... or visits >= N
+    "require_2fa": False,      # every user must use Google Authenticator
     "app_name": "Customers Platform",
     "primary_color": "#1b5e20",
     "openai_api_key": os.environ.get("OPENAI_API_KEY", ""),

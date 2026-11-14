@@ -38,7 +38,7 @@ def public_user(u: dict) -> dict:
     return {"id": u["id"], "username": u["username"], "full_name": u["full_name"],
             "role": u["role"], "branches": json.loads(u["branches"] or "[]"),
             "language": u["language"], "active": u["active"],
-            "created_at": u.get("created_at")}
+            "created_at": u.get("created_at"), "two_factor": bool(u.get("totp_enabled"))}
 
 
 def client_ip(request: Request) -> str:
@@ -63,6 +63,11 @@ def current_user(request: Request,
     user["ip"] = client_ip(request)
     user["default_password"] = u["username"] == config.ADMIN_USERNAME and \
         check_password(config.ADMIN_PASSWORD, u["password_hash"])
+    # when 2FA is required for everyone, a user without it may only set it up
+    user["two_factor_required"] = bool(db.get_settings().get("require_2fa")) and not u.get("totp_enabled")
+    if user["two_factor_required"] and not (request.url.path.startswith("/api/auth/")
+                                            or request.url.path == "/api/branding"):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Set up Google Authenticator first")
     return user
 
 

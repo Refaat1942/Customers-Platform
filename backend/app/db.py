@@ -145,6 +145,10 @@ CREATE TABLE IF NOT EXISTS api_keys (
     requests BIGINT DEFAULT 0
 );
 
+ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_secret TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_pending TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_enabled BOOLEAN NOT NULL DEFAULT FALSE;
+
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE IF NOT EXISTS saved_mappings (signature TEXT PRIMARY KEY, mapping TEXT);
 """
@@ -306,6 +310,17 @@ def _seed_roles(cur):
     for name, (desc, perms) in DEFAULT_ROLES.items():
         cur.execute("INSERT INTO roles VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING",
                     [name, desc, json.dumps(perms), name == "admin"])
+    from .permissions import DERIVED
+    # roles created before a permission existed: grant it where the older permission was granted
+    for name, perms in cur.execute("SELECT name, permissions FROM roles WHERE name <> 'admin'").fetchall():
+        have = json.loads(perms)
+        done = json.loads((cur.execute("SELECT value FROM settings WHERE key = 'perm_migrated'")
+                           .fetchone() or ['[]'])[0])
+        add = [new for new, old in DERIVED.items() if new not in done and old in have and new not in have]
+        if add:
+            cur.execute("UPDATE roles SET permissions = ? WHERE name = ?", [json.dumps(have + add), name])
+    cur.execute("INSERT INTO settings VALUES ('perm_migrated', ?) ON CONFLICT (key) DO UPDATE "
+                "SET value = EXCLUDED.value", [json.dumps(list(DERIVED))])
     # admin always has every permission (also after an upgrade adds new ones)
     cur.execute("UPDATE roles SET permissions = ?, builtin = TRUE WHERE name = 'admin'",
                 [json.dumps(DEFAULT_ROLES["admin"][1])])

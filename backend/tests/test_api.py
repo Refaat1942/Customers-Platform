@@ -602,3 +602,51 @@ def test_username_is_case_sensitive(client):
     c = TestClient(app)
     assert c.post("/api/auth/login", json={"username": "Ahmed.R", "password": "pass-1234567"}).status_code == 200
     assert c.post("/api/auth/login", json={"username": "ahmed.r", "password": "pass-1234567"}).status_code == 401
+
+
+def test_google_authenticator(client):
+    from app import totp
+    from app.main import app
+    assert client.post("/api/users", json={"username": "Mona2FA", "password": "pass-1234567", "role": "viewer"}).status_code == 200
+    c = TestClient(app)
+    tok = c.post("/api/auth/login", json={"username": "Mona2FA", "password": "pass-1234567"}).json()["token"]
+    c.headers["Authorization"] = f"Bearer {tok}"
+    setup = c.post("/api/auth/2fa/setup").json()
+    assert setup["uri"].startswith("otpauth://totp/") and "<svg" in setup["qr_svg"]
+    assert c.post("/api/auth/2fa/enable", json={"code": "000000"}).status_code == 400
+    assert c.post("/api/auth/2fa/enable", json={"code": totp.now_code(setup["secret"])}).status_code == 200
+    # login now needs the code
+    r = TestClient(app).post("/api/auth/login", json={"username": "Mona2FA", "password": "pass-1234567"}).json()
+    assert r == {"two_factor": True}
+    assert TestClient(app).post("/api/auth/login", json={"username": "Mona2FA", "password": "pass-1234567",
+                                                         "code": "123456"}).status_code == 401
+    ok = TestClient(app).post("/api/auth/login", json={"username": "Mona2FA", "password": "pass-1234567",
+                                                       "code": totp.now_code(setup["secret"])}).json()
+    assert ok["token"] and ok["user"]["two_factor"]
+    # admin can reset it (lost phone)
+    uid = ok["user"]["id"]
+    assert client.post(f"/api/users/{uid}/reset-2fa").status_code == 200
+    assert "token" in TestClient(app).post("/api/auth/login", json={"username": "Mona2FA", "password": "pass-1234567"}).json()
+
+
+def test_require_2fa_for_everyone(client):
+    from app.main import app
+    # admin can't force it before enabling it on their own account
+    assert client.put("/api/settings/security", json={"require_2fa": True}).status_code == 400
+    from app import db
+    db.save_settings({"require_2fa": True})
+    try:
+        c = TestClient(app)
+        tok = c.post("/api/auth/login", json={"username": "maadi_mgr", "password": "manager-pass"}).json()["token"]
+        c.headers["Authorization"] = f"Bearer {tok}"
+        assert c.get("/api/auth/me").json()["two_factor_required"] is True
+        assert c.get("/api/customers").status_code == 403
+        assert c.post("/api/auth/2fa/setup").status_code == 200
+    finally:
+        db.save_settings({"require_2fa": False})
+
+
+def test_export_any_table(client):
+    r = client.post("/api/export/table", json={"title": "Branch growth", "columns": ["Branch", "Sales"],
+                                               "rows": [["CA20", 13763690.47], ["CA21", 11448187.15]], "lang": "ar"})
+    assert r.status_code == 200 and r.content[:2] == b"PK"

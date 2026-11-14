@@ -69,10 +69,12 @@ class Filters:
     districts: list[str] = field(default_factory=list)
     seasons: list[str] = field(default_factory=list)
     allowed_branches: list[str] | None = None  # from the user's account
+    compare: str = "last_year"  # growth compared with: same period last year | period just before
 
     def key(self):
         return (self.date_from, self.date_to, tuple(self.branches), tuple(self.types),
-                tuple(self.districts), tuple(self.seasons), tuple(self.allowed_branches or ()))
+                tuple(self.districts), tuple(self.seasons), tuple(self.allowed_branches or ()),
+                self.compare)
 
     def where(self, alias: str = "") -> tuple[str, list]:
         p = f"{alias}." if alias else ""
@@ -453,14 +455,24 @@ def _kpis(cur, f: Filters) -> dict:
     return r
 
 
+def _year_back(d: date) -> date:
+    try:
+        return d.replace(year=d.year - 1)
+    except ValueError:  # 29 Feb
+        return d.replace(year=d.year - 1, day=28)
+
+
 def previous_filters(cur, f: Filters) -> Filters:
-    """Same length period right before the selected one (default: last 30 days)."""
+    """The period to compare with: the SAME dates last year (default), or the same number of
+    days right before. Without a selected range, the last 30 days of data are compared."""
     end = f.date_to or reference_date(cur, f)
     start = f.date_from or (end - timedelta(days=29) if end else None)
     if not start or not end:
         return f
-    span = (end - start).days + 1
-    return replace(f, date_from=start - timedelta(days=span), date_to=start - timedelta(days=1))
+    if f.compare == "previous":
+        span = (end - start).days + 1
+        return replace(f, date_from=start - timedelta(days=span), date_to=start - timedelta(days=1))
+    return replace(f, date_from=_year_back(start), date_to=_year_back(end))
 
 
 def summary(f: Filters, settings: dict) -> dict:
@@ -668,7 +680,7 @@ def insights(f: Filters, settings: dict) -> dict:
            "has_time": any(h["hour"] != 0 for h in r["heatmap"]),
            "new_vs_returning": r["new_vs_returning"], "branch_growth": r["branch_growth"],
            "periods": {"current": [cur_f.date_from, cur_f.date_to],
-                       "previous": [prev.date_from, prev.date_to]}}
+                       "previous": [prev.date_from, prev.date_to]}, "compare": f.compare}
     res["alerts"] = alerts(res, settings)
     return res
 
@@ -680,14 +692,18 @@ def alerts(ins: dict, settings: dict) -> list[dict]:
     def add(level, en, ar):
         out.append({"level": level, "en": en, "ar": ar})
 
+    last_year = ins.get("compare", "last_year") == "last_year"
+    cmp_en = "the same period last year" if last_year else "the period just before"
+    cmp_ar = "بنفس الفترة من العام الماضي" if last_year else "بالفترة اللي قبلها مباشرة"
+
     for g in ins["branch_growth"]:
         ch = g["sales_change"]
         if ch is not None and ch <= -15:
-            add("danger", f"Sales in {g['branch']} dropped {abs(ch):.0f}% vs the previous period.",
-                f"مبيعات فرع {g['branch']} انخفضت {abs(ch):.0f}% مقارنة بالفترة السابقة.")
+            add("danger", f"Sales in {g['branch']} dropped {abs(ch):.0f}% vs {cmp_en}.",
+                f"مبيعات فرع {g['branch']} انخفضت {abs(ch):.0f}% مقارنة {cmp_ar}.")
         elif ch is not None and ch >= 20:
-            add("success", f"Sales in {g['branch']} grew {ch:.0f}% vs the previous period.",
-                f"مبيعات فرع {g['branch']} زادت {ch:.0f}% مقارنة بالفترة السابقة.")
+            add("success", f"Sales in {g['branch']} grew {ch:.0f}% vs {cmp_en}.",
+                f"مبيعات فرع {g['branch']} زادت {ch:.0f}% مقارنة {cmp_ar}.")
         cc = g["customers_change"]
         if cc is not None and cc <= -15:
             add("warning", f"{g['branch']} lost {abs(cc):.0f}% of its active customers.",

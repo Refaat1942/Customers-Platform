@@ -1,4 +1,5 @@
 import json
+import re
 import shutil
 import threading
 import uuid
@@ -14,6 +15,7 @@ from pydantic import BaseModel, Field
 from .. import config, db
 from ..auth import (check_password, client_ip, current_user, hash_password, login_allowed,
                     login_failed, make_token, public_user, require, role_permissions)
+from .. import totp
 from ..core import ai
 from ..core import analytics as an
 from ..core import export as ex
@@ -36,10 +38,11 @@ def filters(
     type: list[str] = Query(default=[]),  # noqa: A002
     district: list[str] = Query(default=[]),
     season: list[str] = Query(default=[]),
+    compare: Literal["last_year", "previous"] = "last_year",
 ) -> an.Filters:
     return an.Filters(date_from=date_from, date_to=date_to, branches=branch, types=type,
                       districts=district, seasons=season,
-                      allowed_branches=user["branches"] or None)
+                      allowed_branches=user["branches"] or None, compare=compare)
 
 
 def audit(user: dict | None, action: str, details: str = ""):
@@ -100,6 +103,7 @@ def filter_meta(f: an.Filters, lang: str) -> list[tuple[str, str]]:
 class LoginIn(BaseModel):
     username: str
     password: str
+    code: str | None = None   # 6-digit Google Authenticator code (when enabled)
 
 
 @router.post("/auth/login")
@@ -115,7 +119,14 @@ def login(body: LoginIn, request: Request):
         login_failed(key)
         db.audit(body.username, "login_failed", "", ip)
         raise HTTPException(401, "Wrong username or password")
-    db.audit(u["username"], "login", "", ip)
+    if u.get("totp_enabled"):
+        if not body.code:
+            return {"two_factor": True}   # password OK - now ask for the authenticator code
+        if not totp.verify(u["totp_secret"], body.code):
+            login_failed(key)
+            db.audit(u["username"], "login_failed", "wrong authenticator code", ip)
+            raise HTTPException(401, "Wrong authenticator code")
+    db.audit(u["username"], "login", "with authenticator" if u.get("totp_enabled") else "", ip)
     user = public_user(u)
     user["permissions"] = role_permissions(u["role"])
     return {"token": make_token(u["id"]), "user": user}
@@ -148,6 +159,71 @@ def update_me(body: ProfileIn, user: dict = Depends(current_user)):
                     [hash_password(body.new_password), user["id"]])
         audit(user, "password_change")
     return {"ok": True}
+
+
+# ====================================================================== Google Authenticator
+@router.post("/auth/2fa/setup")
+def twofa_setup(user: dict = Depends(current_user)):
+    """New secret + QR code to scan in Google Authenticator (not active until confirmed)."""
+    secret = totp.new_secret()
+    db.cursor().execute("UPDATE users SET totp_pending = ? WHERE id = ?", [secret, user["id"]])
+    link = totp.uri(secret, user["username"], db.get_settings()["app_name"])
+    return {"secret": secret, "uri": link, "qr_svg": totp.qr_svg(link)}
+
+
+class CodeIn(BaseModel):
+    code: str
+    password: str | None = None
+
+
+@router.post("/auth/2fa/enable")
+def twofa_enable(body: CodeIn, user: dict = Depends(current_user)):
+    cur = db.cursor()
+    row = db.one(cur, "SELECT totp_pending FROM users WHERE id = ?", [user["id"]])
+    if not row or not row["totp_pending"] or not totp.verify(row["totp_pending"], body.code):
+        raise HTTPException(400, "The code is not correct - check the time on your phone and try again")
+    cur.execute("UPDATE users SET totp_secret = totp_pending, totp_pending = NULL, totp_enabled = TRUE "
+                "WHERE id = ?", [user["id"]])
+    audit(user, "2fa_enabled")
+    return {"ok": True}
+
+
+@router.post("/auth/2fa/disable")
+def twofa_disable(body: CodeIn, user: dict = Depends(current_user)):
+    cur = db.cursor()
+    row = db.one(cur, "SELECT password_hash, totp_secret FROM users WHERE id = ?", [user["id"]])
+    if not check_password(body.password or "", row["password_hash"]) or \
+            not totp.verify(row["totp_secret"], body.code):
+        raise HTTPException(400, "Password or code is not correct")
+    if db.get_settings().get("require_2fa"):
+        raise HTTPException(400, "Google Authenticator is required for everyone (Settings)")
+    cur.execute("UPDATE users SET totp_secret = NULL, totp_enabled = FALSE WHERE id = ?", [user["id"]])
+    audit(user, "2fa_disabled")
+    return {"ok": True}
+
+
+@router.post("/users/{uid}/reset-2fa")
+def twofa_reset(uid: int, user: dict = Depends(require("users"))):
+    """Lost phone: the admin removes the authenticator; the user sets it up again."""
+    cur = db.cursor()
+    old = db.one(cur, "SELECT username FROM users WHERE id = ?", [uid])
+    cur.execute("UPDATE users SET totp_secret = NULL, totp_pending = NULL, totp_enabled = FALSE "
+                "WHERE id = ?", [uid])
+    audit(user, "2fa_reset", old["username"] if old else str(uid))
+    return {"ok": True}
+
+
+class Require2faIn(BaseModel):
+    require_2fa: bool
+
+
+@router.put("/settings/security")
+def put_security(body: Require2faIn, user: dict = Depends(require("settings"))):
+    if body.require_2fa and not user.get("two_factor"):
+        raise HTTPException(400, "Turn on Google Authenticator for your own account first")
+    db.save_settings({"require_2fa": body.require_2fa})
+    audit(user, "settings_update", f"require_2fa={body.require_2fa}")
+    return db.public_settings()
 
 
 # ====================================================================== branding (public read)
@@ -463,7 +539,7 @@ def get_refills(f: an.Filters = Depends(filters), q: str | None = None,
                 status: list[str] = Query(default=[]), sort: str = "due_date", desc: bool = False,
                 page: int = Query(1, ge=1), page_size: int = Query(50, ge=1, le=500),
                 export: bool = False, lang: str = "en",
-                user: dict = Depends(require("recommendations"))):
+                user: dict = Depends(require("refills"))):
     if export:
         need_export(user)
     res = an.refills(f, db.get_settings(), q=q, status=status, sort=sort, desc=desc, page=page,
@@ -479,13 +555,13 @@ def get_refills(f: an.Filters = Depends(filters), q: str | None = None,
 
 # ====================================================================== customer base
 @router.get("/directory/summary")
-def get_directory_summary(user: dict = Depends(require("customers"))):
+def get_directory_summary(user: dict = Depends(require("customer_base"))):
     return db.cached(("dir_summary", tuple(user["branches"])),
                      lambda: an.directory_summary(user["branches"] or None))
 
 
 @router.get("/directory")
-def get_directory(user: dict = Depends(require("customers")), q: str | None = None,
+def get_directory(user: dict = Depends(require("customer_base")), q: str | None = None,
                   region: list[str] = Query(default=[]), city: list[str] = Query(default=[]),
                   district: list[str] = Query(default=[]), bought: bool | None = None,
                   invalid: bool = False, sort: str = "name", desc: bool = False,
@@ -512,7 +588,7 @@ def get_directory(user: dict = Depends(require("customers")), q: str | None = No
 def get_products(f: an.Filters = Depends(filters), q: str | None = None, sort: str = "sales",
                  desc: bool = True, page: int = Query(1, ge=1),
                  page_size: int = Query(50, ge=1, le=500), export: bool = False,
-                 lang: str = "en", user: dict = Depends(require("business"))):
+                 lang: str = "en", user: dict = Depends(require("products"))):
     if export:
         need_export(user)
         res = an.products(f, q=q, sort=sort, desc=desc, limit_all=True)
@@ -808,7 +884,7 @@ def delete_duplicates(user: dict = Depends(require("import"))):
 
 
 @router.get("/maintenance/data-check")
-def get_data_check(user: dict = Depends(require("import"))):
+def get_data_check(user: dict = Depends(require("data_check"))):
     """Live numbers straight from the database (never cached)."""
     res = an.data_check()
     res["checked_at"] = datetime.now()
@@ -927,7 +1003,7 @@ def list_roles(user: dict = Depends(require("users"))):
     for r in roles:
         r["permissions"] = json.loads(r["permissions"])
     return {"roles": roles,
-            "permissions": [{"key": k, "en": en, "ar": ar} for k, en, ar in PERMISSIONS]}
+            "permissions": [{"key": k, "en": en, "ar": ar, "group": g} for k, en, ar, g in PERMISSIONS]}
 
 
 def _clean_perms(perms: list[str]) -> list[str]:
@@ -1061,8 +1137,30 @@ def pos_activity(user: dict = Depends(require("settings"))):
 
 # ====================================================================== live POS
 @router.get("/live")
-def get_live(branch: str | None = None, user: dict = Depends(require("dashboard"))):
+def get_live(branch: str | None = None, user: dict = Depends(require("live"))):
     res = an.live(user["branches"] or None, branch)
     protect(res["feed"], user)
     protect(res["new_customers"], user)
     return res
+
+
+# ====================================================================== any table -> Excel
+class TableExportIn(BaseModel):
+    title: str = Field(default="Table", max_length=120)
+    columns: list[str] = Field(max_length=200)
+    rows: list[list] = Field(max_length=200000)
+    lang: Literal["en", "ar"] = "en"
+
+
+@router.post("/export/table")
+def export_table(body: TableExportIn, user: dict = Depends(current_user)):
+    """The 'Excel' button on every table: exactly the rows and columns shown on screen."""
+    need_export(user)
+    df = pd.DataFrame(body.rows, columns=body.columns)
+    audit(user, "export", f"table '{body.title}' ({len(df)} rows)")
+    safe = re.sub(r"[^\w\u0600-\u06FF -]", "", body.title)[:31] or "Table"
+    name = re.sub(r"\s+", "_", safe) or "table"
+    return xlsx_response(ex.workbook([(safe, df)], body.lang, body.title,
+                                     [("التاريخ" if body.lang == "ar" else "Generated",
+                                       datetime.now().strftime("%Y-%m-%d %H:%M"))]),
+                         f"{name}.xlsx".encode("ascii", "ignore").decode() or "table.xlsx")
