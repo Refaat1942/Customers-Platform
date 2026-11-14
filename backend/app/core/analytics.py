@@ -1199,7 +1199,8 @@ def meta(allowed_branches: list[str] | None) -> dict:
 
     rng = cur.execute(f"SELECT min(day), max(day), count(*) FROM sales WHERE {w}", p).fetchone()
     directory = cur.execute("SELECT count(*) FROM customer_directory").fetchone()[0]
-    return {"directory_customers": directory,
+    names = dict(cur.execute("SELECT code, name FROM branches WHERE name IS NOT NULL").fetchall())
+    return {"directory_customers": directory, "branch_names": names,
             "branches": distinct("branch"), "types": distinct("invoice_type"),
             "districts": distinct("district"), "seasons": SEASON_ORDER,
             "date_min": rng[0], "date_max": rng[1], "rows": rng[2]}

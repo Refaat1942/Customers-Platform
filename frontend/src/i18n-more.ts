@@ -2,6 +2,14 @@ import i18n from "./i18n";
 
 /** Texts for products (code + name, product page), shifts, and the merged customers page. */
 const en = {
+  pos: {
+    bulkTitle: "Upload branches and devices from Excel (one key per device)",
+    bulkHelp: "An Excel with: branch code (like CA28) - branch name - number of POS devices in the branch (optional, empty = 1 device). Branch names are saved and every device without a key gets one. Upload it again with a bigger number and only the extra keys are made.",
+    bulkExName: "El Batrawy St - Nasr City", bulkExName2: "Al Moez Mall - Sheikh Zayed",
+    bulkUpload: "Upload branches Excel", bulkDone: "{{b}} branches saved · {{k}} new keys",
+    bulkShown: "These keys are shown only once. Click Excel above the table to download them now, keep the file safe, and give each branch the keys of its devices.",
+    branchName: "Branch name", device: "Device", keyCol: "Key",
+  },
   nav: { shifts: "Shifts" },
   navHint: { shifts: "Night, morning and evening: sales, branches, live POS vs files", customers: "Everyone who bought + your customer lists" },
   col: { code: "Product code", item: "Product name", units: "Units", branches: "Branches", avg_days_between: "Re-buys every", shift: "Shift", purchases: "Purchases", last_bought: "Last bought", units_per_day: "Units / day", pct: "% of its invoices", hour: "Hour" },
@@ -40,6 +48,14 @@ const en = {
 };
 
 const ar = {
+  pos: {
+    bulkTitle: "رفع الفروع والأجهزة من إكسيل (مفتاح لكل جهاز)",
+    bulkHelp: "إكسيل فيه: كود الفرع (زي CA28) - اسم الفرع - عدد أجهزة الكاشير في الفرع (اختياري، لو فاضي = جهاز واحد). البرنامج بيحفظ أسماء الفروع وبيعمل مفتاح لكل جهاز ملوش مفتاح. لو رفعت الملف تاني بعدد أكبر، بيعمل المفاتيح الزيادة بس.",
+    bulkExName: "ش البطراوى - مدينة نصر", bulkExName2: "مول المعز - الشيخ زايد",
+    bulkUpload: "ارفع إكسيل الفروع", bulkDone: "{{b}} فرع اتحفظوا · {{k}} مفتاح جديد",
+    bulkShown: "المفاتيح دي بتظهر مرة واحدة بس. اضغط Excel فوق الجدول ونزّلها دلوقتي واحفظها في مكان آمن، وابعت لكل فرع مفاتيح أجهزته.",
+    branchName: "اسم الفرع", device: "الجهاز", keyCol: "المفتاح",
+  },
   nav: { shifts: "الورديات" },
   navHint: { shifts: "الليل والصباح والمساء: المبيعات والفروع والكاشير المباشر مقابل الملفات", customers: "كل من اشترى + قوائم العملاء المرفوعة" },
   col: { code: "كود الصنف", item: "اسم الصنف", units: "الوحدات", branches: "الفروع", avg_days_between: "يعيد الشراء كل", shift: "الوردية", purchases: "مرات الشراء", last_bought: "آخر شراء", units_per_day: "وحدات / يوم", pct: "% من فواتيره", hour: "الساعة" },

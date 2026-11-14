@@ -742,3 +742,23 @@ def test_sales_types_product_catalogue_and_shifts(client):
                      "high_value_spend", "loyalty_spend", "loyalty_visits")},
                      "shift_morning": "18:00", "shift_evening": "09:00"})
     assert bad.status_code == 400
+
+
+def test_branch_list_upload_creates_pos_keys(client):
+    data = _headerless([["Key name", "Branch name", "Devices"], ["CA01", "تريومف - مصر الجديدة", 2],
+                        ["CA28", "ش البطراوى - مدينة نصر", 3], ["GZ02", "مول المعز - الشيخ زايد", None]])
+    r = client.post("/api/integration/branches/upload", files={"file": ("branches.xlsx", data)})
+    assert r.status_code == 200, r.text
+    res = r.json()
+    assert res["branches"] == 3 and res["new_keys"] == 6
+    keys = [x for x in res["rows"] if x["key"]]
+    assert sorted(x["device"] for x in keys if x["code"] == "CA28") == ["CA28 - Device 1", "CA28 - Device 2", "CA28 - Device 3"]
+    assert client.get("/api/v1/pos/ping", headers={"X-API-Key": keys[0]["key"]}).status_code == 200
+    # again with one more device for CA01: only that key is new
+    more = _headerless([["CA01", "تريومف - مصر الجديدة", 3], ["CA28", "ش البطراوى - مدينة نصر", 3]])
+    r2 = client.post("/api/integration/branches/upload", files={"file": ("b.xlsx", more)}).json()
+    assert r2["new_keys"] == 1 and [x["device"] for x in r2["rows"] if x["key"]] == ["CA01 - Device 3"]
+    assert client.get("/api/meta").json()["branch_names"]["GZ02"] == "مول المعز - الشيخ زايد"
+    assert len(client.get("/api/integration/branches").json()) >= 3
+    bad = client.post("/api/integration/branches/upload", files={"file": ("x.xlsx", _headerless([["a", "b"], ["x", "y"]]))})
+    assert bad.status_code == 400

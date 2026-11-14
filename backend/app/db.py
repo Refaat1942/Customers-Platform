@@ -161,6 +161,13 @@ CREATE TABLE IF NOT EXISTS products (
     updated_at TIMESTAMP DEFAULT now()
 );
 
+-- branch list: code as used in the sales files / POS (e.g. CA28) -> readable name
+CREATE TABLE IF NOT EXISTS branches (
+    code TEXT PRIMARY KEY,
+    name TEXT,
+    updated_at TIMESTAMP DEFAULT now()
+);
+
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE IF NOT EXISTS saved_mappings (signature TEXT PRIMARY KEY, mapping TEXT);
 """

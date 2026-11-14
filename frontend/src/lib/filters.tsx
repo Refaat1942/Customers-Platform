@@ -15,7 +15,7 @@ export type Meta = {
   branches: string[]; types: string[]; districts: string[]; seasons: string[];
   date_min: string | null; date_max: string | null; rows: number;
   last_import: { id: number; filename: string; finished_at: string } | null;
-  segments: string[]; ai_enabled: boolean; directory_customers: number;
+  segments: string[]; ai_enabled: boolean; directory_customers: number; branch_names?: Record<string, string>;
   settings: Record<string, any>;
 };
 
@@ -44,6 +44,15 @@ type Ctx = {
   params: Params; meta: Meta | undefined; key: unknown[];
 };
 const FiltersCtx = createContext<Ctx>(null!);
+
+/** "CA28" -> "CA28 · ش البطراوى - مدينة نصر" when a branch list was uploaded (Settings). */
+export function useBranchName() {
+  const meta = useContext(FiltersCtx)?.meta;
+  return (code: unknown) => {
+    const n = typeof code === "string" ? meta?.branch_names?.[code] : undefined;
+    return n ? `${code} · ${n}` : (code as string);
+  };
+}
 
 function load(): FilterState {
   try { return { ...EMPTY, ...JSON.parse(localStorage.getItem("cp_filters") || "{}") }; } catch { return EMPTY; }

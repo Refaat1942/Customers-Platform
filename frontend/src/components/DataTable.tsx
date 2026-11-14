@@ -5,6 +5,9 @@ import { ArrowDown, ArrowUp, ArrowUpDown, ChevronLeft, ChevronRight, Download, L
 import { api } from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { fmtInt } from "../lib/format";
+import { useBranchName } from "../lib/filters";
+
+const BRANCH_COLS = new Set(["branch", "top_branch", "fav_branch", "registered_branch"]);
 
 export type Column<T> = {
   key: string; label: string; render?: (row: T) => ReactNode; sortable?: boolean; num?: boolean;
@@ -39,6 +42,7 @@ function compare(a: unknown, b: unknown) {
 export default function DataTable<T extends Record<string, any>>(p: Props<T>) {
   const { t, i18n } = useTranslation();
   const { can } = useAuth();
+  const branchName = useBranchName();
   const rtl = i18n.language === "ar";
   const server = !!p.onSort;               // sorted by the server (paged lists)
   const [lsort, setLsort] = useState<string | null>(null);
@@ -125,7 +129,7 @@ export default function DataTable<T extends Record<string, any>>(p: Props<T>) {
                 className={clsx("border-t border-line", p.onRowClick && "cursor-pointer hover:bg-brand-soft")}>
                 {p.columns.map((c) => (
                   <td key={c.key} className={clsx("td", c.num && "text-end num", c.className)}>
-                    {c.render ? c.render(r) : (r[c.key] ?? "–")}
+                    {c.render ? c.render(r) : BRANCH_COLS.has(c.key) && r[c.key] ? branchName(r[c.key]) : (r[c.key] ?? "–")}
                   </td>
                 ))}
               </tr>

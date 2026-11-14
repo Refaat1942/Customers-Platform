@@ -1170,6 +1170,92 @@ def create_api_key(body: ApiKeyIn, user: dict = Depends(require("settings"))):
     return {"key": key, "note": "Copy it now - it is shown only once."}
 
 
+BRANCH_CODE = re.compile(r"^[A-Za-z]{1,6}[ -]?\d{1,6}$")
+
+
+def read_branch_list(path: Path) -> list[tuple[str, str | None, int]]:
+    """Branch code (CA28), branch name and (optional) number of POS devices - whatever the
+    headers say (or none)."""
+    df = importer.read_file(path)
+    if any(BRANCH_CODE.match(str(c).strip()) for c in df.columns):  # no header: first row is a branch
+        df = pd.concat([pd.DataFrame([list(df.columns)], columns=df.columns), df], ignore_index=True)
+        df.columns = importer.generic_header(len(df.columns))
+    df = df.dropna(axis=1, how="all")
+    if df.empty:
+        raise HTTPException(400, "The file is empty")
+    txt = {c: df[c].map(importer._text) for c in df.columns}
+    score = {c: v.dropna().astype(str).str.strip().str.match(BRANCH_CODE).mean() if v.notna().any() else 0
+             for c, v in txt.items()}
+    code_col = max(score, key=score.get)
+    if score[code_col] < 0.6:
+        raise HTTPException(400, "Could not find a column with branch codes like CA28")
+    rest = [c for c in df.columns if c != code_col and txt[c].notna().any()]
+    nums = {c: pd.to_numeric(df[c], errors="coerce") for c in rest}
+    # number of devices: whole numbers 0-99 (empty cells = 1 device)
+    dev_cols = [c for c in rest if nums[c].notna().any()
+                and nums[c].notna().sum() == txt[c].notna().sum()
+                and (nums[c].dropna() % 1 == 0).all() and nums[c].dropna().between(0, 99).all()]
+    dev_col = dev_cols[0] if dev_cols else None
+    names = [c for c in rest if c != dev_col]
+    name_col = max(names, key=lambda c: txt[c].dropna().astype(str).str.len().mean()) if names else None
+    out = {}
+    for i, code in enumerate(txt[code_col]):
+        if not code or not BRANCH_CODE.match(code):
+            continue
+        n = nums[dev_col].iloc[i] if dev_col else None
+        out[code.upper().replace(" ", "")] = (txt[name_col].iloc[i] if name_col else None,
+                                              1 if n is None or pd.isna(n) else int(n))
+    return [(c, nm, d) for c, (nm, d) in out.items()]
+
+
+@router.post("/integration/branches/upload")
+def upload_branches(file: UploadFile = File(...), create_keys: bool = True,
+                    user: dict = Depends(require("settings"))):
+    """Excel / CSV of branches (code, name, number of POS devices): saves the branch names and
+    creates one POS key per device that does not have one yet. New keys are returned once."""
+    from .pos import hash_key, new_key
+    suffix = Path(file.filename or "branches.xlsx").suffix.lower()
+    if suffix not in (".xlsx", ".xls", ".xlsb", ".xlsm", ".csv"):
+        raise HTTPException(400, "Upload an Excel or CSV file")
+    tmp = config.DATA_DIR / f"branches_{uuid.uuid4().hex}{suffix}"
+    try:
+        with tmp.open("wb") as f:
+            shutil.copyfileobj(file.file, f)
+        items = read_branch_list(tmp)
+    finally:
+        tmp.unlink(missing_ok=True)
+    cur = db.cursor()
+    have: dict[str, int] = dict(cur.execute(
+        "SELECT branch, count(*) FROM api_keys WHERE active AND branch IS NOT NULL GROUP BY branch").fetchall())
+    rows = []
+    for code, name, devices in items:
+        cur.execute("""INSERT INTO branches (code, name) VALUES (?, ?) ON CONFLICT (code) DO UPDATE
+                       SET name = coalesce(EXCLUDED.name, branches.name), updated_at = now()""", [code, name])
+        existing = have.get(code, 0)
+        if create_keys:
+            for i in range(existing + 1, devices + 1):
+                key = new_key()
+                label = f"{code} - Device {i}"
+                cur.execute("INSERT INTO api_keys (name, branch, prefix, key_hash, created_by) "
+                            "VALUES (?, ?, ?, ?, ?)", [label, code, key[:10], hash_key(key), user["username"]])
+                rows.append({"code": code, "name": name, "device": label, "key": key})
+        if not create_keys or existing >= devices:
+            rows.append({"code": code, "name": name, "device": None, "key": None, "had_keys": existing})
+    db.bump_version()
+    new = sum(1 for r in rows if r["key"])
+    audit(user, "branches_upload", f"{len(items)} branches, {new} new POS keys")
+    return {"branches": len(items), "new_keys": new, "rows": rows}
+
+
+@router.get("/integration/branches")
+def list_branches(user: dict = Depends(require("settings"))):
+    return db.rows(db.cursor(), """SELECT b.code, b.name, b.updated_at,
+        EXISTS (SELECT 1 FROM api_keys k WHERE k.active AND k.branch = b.code) AS has_key,
+        (SELECT count(*) FROM api_keys k WHERE k.active AND k.branch = b.code) AS keys,
+        EXISTS (SELECT 1 FROM sales s WHERE s.branch = b.code) AS has_sales
+        FROM branches b ORDER BY b.code""")
+
+
 @router.delete("/integration/keys/{kid}")
 def revoke_api_key(kid: int, user: dict = Depends(require("settings"))):
     cur = db.cursor()

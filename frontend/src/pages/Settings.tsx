@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { Copy, ImageUp, KeyRound, Trash2 } from "lucide-react";
+import { Copy, FileSpreadsheet, ImageUp, KeyRound, Loader2, Trash2 } from "lucide-react";
 import { api } from "../lib/api";
 import { useBranding } from "../lib/branding";
 import { Logo } from "../components/Layout";
@@ -149,6 +149,18 @@ function PosCard() {
       qc.invalidateQueries({ queryKey: ["api_keys"] });
     } catch (e) { setErr((e as Error).message); }
   };
+  const bulkFile = useRef<HTMLInputElement>(null);
+  const [bulk, setBulk] = useState<{ branches: number; new_keys: number; rows: any[] } | null>(null);
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const uploadBranches = async (f: File) => {
+    setErr(null); setBulk(null); setBulkBusy(true);
+    try {
+      const fd = new FormData(); fd.append("file", f);
+      setBulk(await api.post("/integration/branches/upload", fd));
+      qc.invalidateQueries({ queryKey: ["api_keys"] }); qc.invalidateQueries({ queryKey: ["meta"] });
+    } catch (e) { setErr((e as Error).message); }
+    setBulkBusy(false);
+  };
   const revoke = async (id: number) => {
     if (!confirm(t("pos.revokeConfirm"))) return;
     await api.del(`/integration/keys/${id}`);
@@ -161,6 +173,37 @@ function PosCard() {
         <div className="flex-1 min-w-48"><label className="label">{t("pos.name")}</label><input className="input" value={name} onChange={(e) => setName(e.target.value)} /></div>
         <div className="flex-1 min-w-48"><label className="label">{t("pos.branch")}</label><input className="input" value={branch} onChange={(e) => setBranch(e.target.value)} /></div>
         <button className="btn-primary" disabled={name.trim().length < 2} onClick={create}><KeyRound size={16} /> {t("pos.create")}</button>
+      </div>
+      <div className="mt-5 rounded-lg border border-dashed border-line p-4">
+        <div className="font-semibold text-sm">{t("pos.bulkTitle")}</div>
+        <div className="text-xs text-muted mt-1 mb-3">{t("pos.bulkHelp")}</div>
+        <div className="text-xs mb-3 overflow-x-auto">
+          <table className="border border-line text-start"><tbody>
+            <tr className="bg-surface">{["CA28", t("pos.bulkExName"), "3"].map((v, i) => <td key={i} className="border border-line px-2 py-1">{v}</td>)}</tr>
+            <tr>{["GZ02", t("pos.bulkExName2"), "1"].map((v, i) => <td key={i} className="border border-line px-2 py-1">{v}</td>)}</tr>
+          </tbody></table>
+        </div>
+        <button className="btn-ghost" disabled={bulkBusy} onClick={() => bulkFile.current?.click()}>
+          {bulkBusy ? <Loader2 size={16} className="animate-spin" /> : <FileSpreadsheet size={16} />} {t("pos.bulkUpload")}
+        </button>
+        <input ref={bulkFile} type="file" hidden accept=".xlsx,.xls,.xlsb,.csv" onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ""; if (f) uploadBranches(f); }} />
+        {bulk && (
+          <div className="mt-4 space-y-3">
+            <Notice kind={bulk.new_keys ? "warning" : "success"}>
+              <div className="font-semibold">{t("pos.bulkDone", { b: fmtInt(bulk.branches), k: fmtInt(bulk.new_keys) })}</div>
+              {bulk.new_keys > 0 && <div className="mt-1">{t("pos.bulkShown")}</div>}
+            </Notice>
+            {bulk.new_keys > 0 && (
+              <DataTable title="POS keys" rows={bulk.rows.filter((r) => r.key)} maxHeight={420} columns={[
+                { key: "code", label: t("col.branch") },
+                { key: "name", label: t("pos.branchName") },
+                { key: "device", label: t("pos.device") },
+                { key: "key", label: t("pos.keyCol"), className: "font-mono text-xs break-all" },
+                { key: "x", label: "", render: (r: any) => <button className="text-xs text-brand hover:underline cursor-pointer" onClick={() => navigator.clipboard?.writeText(r.key)}><Copy size={12} className="inline" /> {t("ai.copy")}</button> },
+              ]} />
+            )}
+          </div>
+        )}
       </div>
       {err && <div className="mt-3"><Notice kind="danger">{err}</Notice></div>}
       {created && (
