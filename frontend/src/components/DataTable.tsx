@@ -116,7 +116,7 @@ export default function DataTable<T extends Record<string, any>>(p: Props<T>) {
                     <span className={clsx("inline-flex items-center gap-1", c.num && "flex-row-reverse")}>
                       {c.label}
                       {active ? (sortDesc ? <ArrowDown size={12} className="text-brand" /> : <ArrowUp size={12} className="text-brand" />)
-                        : can && <ArrowUpDown size={11} className="opacity-0 group-hover:opacity-60" />}
+                        : can && <ArrowUpDown size={11} className="opacity-30 group-hover:opacity-70" />}
                     </span>
                   </th>
                 );

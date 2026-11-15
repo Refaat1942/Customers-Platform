@@ -3,7 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import clsx from "clsx";
-import { ArrowLeft, ArrowRight, ChevronDown, IdCard, Loader2, Phone, Search } from "lucide-react";
+import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, ArrowUpDown, ChevronDown, IdCard, Loader2, Phone, Search } from "lucide-react";
 import { api } from "../lib/api";
 import { useFilters } from "../lib/filters";
 import { fmtDate, fmtInt, fmtMoney, fmtNum } from "../lib/format";
@@ -62,6 +62,17 @@ function Purchases({ d, cid, params }: { d: any; cid: string; params: any }) {
   const s = d.summary;
   const [open, setOpen] = useState<string | null>(null);
   const [itemQ, setItemQ] = useState("");
+  // visit history: newest first by default, any column can be sorted both ways
+  const [vsort, setVsort] = useState<{ k: string; desc: boolean }>({ k: "date", desc: true });
+  const visits = [...d.visits].sort((a: any, b: any) => {
+    const x = a[vsort.k], y = b[vsort.k];
+    if (x == null && y == null) return 0;
+    if (x == null) return 1;
+    if (y == null) return -1;
+    const c = typeof x === "number" && typeof y === "number" ? x - y : String(x).localeCompare(String(y), undefined, { numeric: true });
+    return vsort.desc ? -c : c;
+  });
+  const vcol = (k: string) => (k === "invoice_type" ? "sales_type" : k);
   const items = d.items.filter((x: any) => !itemQ || `${x.item} ${x.code ?? ""} ${x.category ?? ""}`.toLowerCase().includes(itemQ.toLowerCase()));
   return (
     <div className="space-y-5">
@@ -105,13 +116,22 @@ function Purchases({ d, cid, params }: { d: any; cid: string; params: any }) {
             <thead className="bg-surface sticky top-0 z-10">
               <tr>
                 <th className="th w-8" />
-                {["date", "branch", "invoice_no", "invoice_type", "lines", "total", "items"].map((c) => (
-                  <th key={c} className={clsx("th", (c === "lines" || c === "total") && "text-end")}>{t(`col.${c}`)}</th>
-                ))}
+                {["date", "branch", "invoice_no", "invoice_type", "lines", "total", "items"].map((c) => {
+                  const k = vcol(c), on = vsort.k === k;
+                  return (
+                    <th key={c} title={t("table.sortHint")} onClick={() => setVsort({ k, desc: on ? !vsort.desc : true })}
+                      className={clsx("th cursor-pointer select-none hover:text-ink", (c === "lines" || c === "total") && "text-end")}>
+                      <span className={clsx("inline-flex items-center gap-1", (c === "lines" || c === "total") && "flex-row-reverse")}>
+                        {t(`col.${c}`)}
+                        {on ? (vsort.desc ? <ArrowDown size={12} className="text-brand" /> : <ArrowUp size={12} className="text-brand" />) : <ArrowUpDown size={11} className="opacity-30" />}
+                      </span>
+                    </th>
+                  );
+                })}
               </tr>
             </thead>
             <tbody>
-              {d.visits.map((v: any) => (
+              {visits.map((v: any) => (
                 <Fragment key={v.visit_key}>
                   <tr onClick={() => setOpen(open === v.visit_key ? null : v.visit_key)}
                     className={clsx("border-t border-line cursor-pointer hover:bg-brand-soft", open === v.visit_key && "bg-brand-soft")}>

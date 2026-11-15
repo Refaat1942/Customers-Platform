@@ -423,7 +423,7 @@ def customer_profile(phone: str, f: Filters, settings: dict) -> dict | None:
             min(branch) AS branch, min(invoice_type) AS sales_type, count(*) AS lines,
             {R("sum(item_price)")} AS total,
             string_agg(DISTINCT coalesce(item_name, item_code), ' · ') AS items
-            {base} GROUP BY visit_key ORDER BY date DESC LIMIT 200""", bp),
+            {base} GROUP BY visit_key ORDER BY date DESC LIMIT 2000""", bp),
     }
 
 
