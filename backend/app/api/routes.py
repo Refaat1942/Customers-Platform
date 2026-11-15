@@ -687,26 +687,59 @@ def get_products(f: an.Filters = Depends(filters), q: str | None = None, sort: s
                  desc: bool = True, page: int = Query(1, ge=1),
                  group: Literal["category", "subcategory", "brand", "manufacturer"] = "category",
                  page_size: int = Query(50, ge=1, le=500), export: bool = False,
+                 only_category: str | None = None, only_subcategory: str | None = None,
+                 only_brand: str | None = None,
                  lang: str = "en", user: dict = Depends(require("products"))):
+    only = {"category": only_category, "subcategory": only_subcategory, "brand": only_brand}
     if export:
         need_export(user)
-        res = an.products(f, q=q, sort=sort, desc=desc, limit_all=True)
+        res = an.products(f, q=q, sort=sort, desc=desc, limit_all=True, only=only)
         audit(user, "export", f"products ({res['total']}) {filter_text(f)}")
         cols = ["code", "item", "category", "subcategory", "brand", "manufacturer", "material_group",
                 "list_price", "sales", "share", "quantity",
                 "invoices", "customers", "repeat_buyers", "repeat_rate", "times_per_buyer",
                 "avg_days_between", "avg_price", "branches", "top_branch", "first_sold", "last_sold"]
         sheet = "الأصناف" if lang == "ar" else "Products"
-        return xlsx_response(ex.workbook([(sheet, ex.frame(res["rows"], cols, lang))], lang, sheet,
-                                         filter_meta(f, lang)), "products_report.xlsx")
-    return db.cached(("products", f.key(), q, sort, desc, page, page_size, group),
+        df = ex.frame(res["rows"], cols, lang)
+        # + every column of the uploaded product file
+        file_cols = [c for c in an.product_columns() if any(c in (r.get("_extra") or {}) for r in res["rows"])]
+        file_cols += sorted({c for r in res["rows"] for c in (r.get("_extra") or {})} - set(file_cols))
+        for c in file_cols:
+            name = c if c not in df.columns else f"{c} ({'ملف الأصناف' if lang == 'ar' else 'product file'})"
+            df[name] = [(r.get("_extra") or {}).get(c) for r in res["rows"]]
+        return xlsx_response(ex.workbook([(sheet, df)], lang, sheet, filter_meta(f, lang)), "products_report.xlsx")
+    return db.cached(("products", f.key(), q, sort, desc, page, page_size, group, tuple(only.items())),
                      lambda: an.products(f, q=q, sort=sort, desc=desc, page=page,
-                                         page_size=page_size, group=group))
+                                         page_size=page_size, group=group, only=only))
+
+
+@router.get("/products/keys")
+def product_keys(f: an.Filters = Depends(filters), q: str | None = None, only_category: str | None = None,
+                 only_subcategory: str | None = None, only_brand: str | None = None,
+                 user: dict = Depends(require("products"))):
+    """Every product matching the search / class filters (for 'select all'), best sellers first."""
+    only = {"category": only_category, "subcategory": only_subcategory, "brand": only_brand}
+    res = an.products(f, q=q, sort="sales", desc=True, page=1, page_size=5000, only=only, keys_only=True)
+    return {"rows": res["rows"], "total": res["total"]}
 
 
 @router.get("/products/search")
 def search_products(q: str = Query(min_length=1, max_length=100), user: dict = Depends(require("products"))):
     return an.product_search(q)
+
+
+class InspectIn(BaseModel):
+    keys: list[str] = Field(default_factory=list, max_length=5000)
+    interval: Literal["day", "week", "month"] = "month"
+    export: bool = False
+    lang: Literal["en", "ar"] = "en"
+
+
+@router.post("/products/inspect")
+def inspect_products_many(body: InspectIn, f: an.Filters = Depends(filters),
+                          user: dict = Depends(require("products"))):
+    """Same as GET, for long selections (hundreds of products do not fit in a link)."""
+    return inspect_products(body.keys, f, body.interval, body.export, body.lang, user)
 
 
 @router.get("/products/inspect")
@@ -715,7 +748,7 @@ def inspect_products(keys: list[str] = Query(default=[]), f: an.Filters = Depend
                      lang: Literal["en", "ar"] = "en", user: dict = Depends(require("products"))):
     """Selected products side by side, within the filters (dates, branch, sales type...)."""
     settings = db.get_settings()
-    res = db.cached(("inspect", tuple(keys), f.key(), interval, settings.get("shift_morning"),
+    res = db.cached(("inspect", hash(tuple(sorted(keys))), f.key(), interval, settings.get("shift_morning"),
                      settings.get("shift_evening")), lambda: an.product_inspect(keys, f, settings, interval))
     res = {**res, "buyers": protect([dict(r) for r in res["buyers"]], user)}
     if not export:

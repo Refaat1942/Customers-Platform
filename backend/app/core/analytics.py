@@ -931,7 +931,7 @@ PRODUCT_GROUPS = {
 
 
 def products(f: Filters, *, q=None, sort="sales", desc=True, page=1, page_size=50,
-             limit_all=False, group="category") -> dict:
+             limit_all=False, group="category", only: dict | None = None, keys_only=False) -> dict:
     """Per product (by code): sales, units, invoices, buyers, repeat buyers, price, best branch,
     re-purchase interval."""
     cur = db.cursor()
@@ -941,6 +941,10 @@ def products(f: Filters, *, q=None, sort="sales", desc=True, page=1, page_size=5
         cond = ("WHERE item ILIKE ? OR code ILIKE ? OR category ILIKE ? OR subcategory ILIKE ? "
                 "OR brand ILIKE ? OR manufacturer ILIKE ?")
         cp = [f"%{q}%"] * 6
+    for col, val in (only or {}).items():  # e.g. {"brand": "DETTOL"}: products of one class only
+        if col in ("category", "subcategory", "brand", "manufacturer") and val:
+            cond = (cond + " AND " if cond else "WHERE ") + f"coalesce({col}, '-') = ?"
+            cp.append(val)
     sort = sort if sort in PRODUCT_SORTS else "sales"
     sql = f"""
       WITH s AS (SELECT {PRODUCT_KEY} AS key, * FROM sales
@@ -974,7 +978,7 @@ def products(f: Filters, *, q=None, sort="sales", desc=True, page=1, page_size=5
                         {R("100.0 * rep.repeat_buyers / nullif(rep.buyers, 0)")} AS repeat_rate,
                         {R("100 * sales / nullif(sum(sales) OVER (), 0)")} AS share
                  FROM agg LEFT JOIN rep USING (key) LEFT JOIN topb USING (key))
-      SELECT *, count(*) OVER () AS _total FROM t {cond}
+      SELECT {'key, code, item' if keys_only else '*'}, count(*) OVER () AS _total FROM t {cond}
       ORDER BY {sort} {'DESC' if desc else 'ASC'} NULLS LAST, item, code"""
     sql += " LIMIT 1048000" if limit_all else \
         f" LIMIT {int(page_size)} OFFSET {int((page - 1) * page_size)}"
@@ -983,6 +987,14 @@ def products(f: Filters, *, q=None, sort="sales", desc=True, page=1, page_size=5
     for r in rows:
         r.pop("_total", None)
     extra = {}
+    if keys_only:
+        return {"rows": rows, "total": total}
+    if limit_all and rows:  # Excel: every column of the product file too
+        codes = [r["code"] for r in rows if r.get("code")]
+        exm = {r["item_code"]: r["extra"] or {} for r in db.rows(cur, "SELECT item_code, extra FROM products "
+                                                                     "WHERE item_code = ANY(?) AND extra IS NOT NULL", [codes])}
+        for r in rows:
+            r["_extra"] = exm.get(r.get("code")) or {}
     if page == 1 and not limit_all:
         extra = parallel({
             "by_category": q_rows(f"""SELECT {PRODUCT_GROUPS.get(group, PRODUCT_GROUPS["category"])} AS category,
@@ -993,6 +1005,13 @@ def products(f: Filters, *, q=None, sort="sales", desc=True, page=1, page_size=5
                 GROUP BY 1 ORDER BY sales DESC LIMIT 30""", p),
             "groups": q_one("""SELECT count(subcategory) > 0 AS subcategory, count(brand) > 0 AS brand,
                 count(manufacturer) > 0 AS manufacturer FROM products"""),
+            "options": q_one("""SELECT
+                (SELECT array_agg(v ORDER BY v) FROM (SELECT DISTINCT coalesce(item_category, '-') v FROM sales
+                    WHERE item_category IS NOT NULL LIMIT 300) a) AS category,
+                (SELECT array_agg(v ORDER BY v) FROM (SELECT DISTINCT subcategory v FROM products
+                    WHERE subcategory IS NOT NULL LIMIT 300) a) AS subcategory,
+                (SELECT array_agg(v ORDER BY v) FROM (SELECT DISTINCT brand v FROM products
+                    WHERE brand IS NOT NULL LIMIT 3000) a) AS brand"""),
             "names": q_one(f"""SELECT count(DISTINCT item_code) AS codes,
                 count(DISTINCT item_code) FILTER (WHERE item_name IS NULL AND NOT EXISTS
                     (SELECT 1 FROM products pc WHERE pc.item_code = sales.item_code AND pc.item_name IS NOT NULL))
@@ -1001,7 +1020,14 @@ def products(f: Filters, *, q=None, sort="sales", desc=True, page=1, page_size=5
                 FROM sales WHERE {w}""", p),
         })
     return {"rows": rows, "total": total, "by_category": extra.get("by_category", []),
-            "names": extra.get("names"), "groups": extra.get("groups")}
+            "names": extra.get("names"), "groups": extra.get("groups"), "options": extra.get("options")}
+
+
+def product_columns() -> list[str]:
+    """Columns of the last product file, in file order."""
+    import json as _json
+    r = q_one("SELECT value FROM settings WHERE key = 'product_columns'")()
+    return _json.loads(r["value"]) if r else []
 
 
 def product_search(q: str, limit: int = 30) -> list:
@@ -1024,7 +1050,7 @@ def product_search(q: str, limit: int = 30) -> list:
 
 def product_inspect(keys: list[str], f: Filters, settings: dict, interval: str = "month") -> dict:
     """Several products side by side within the filters (dates, branches, sales types...)."""
-    keys = [k for k in dict.fromkeys(keys) if k.startswith(("c:", "n:"))][:20]
+    keys = [k for k in dict.fromkeys(keys) if k.startswith(("c:", "n:"))][:5000]
     if not keys:
         return {"products": [], "timeline": [], "by_branch": [], "by_type": [], "by_shift": [], "buyers": []}
     w, p = f.where()
@@ -1071,7 +1097,21 @@ def product_inspect(keys: list[str], f: Filters, settings: dict, interval: str =
     for r in res["buyers"]:
         r["cid"] = cid(r["phone"])
     res["products"].sort(key=lambda r: -(r["sales"] or 0))
-    res["missing"] = [k for k in keys if k not in {r["key"] for r in res["products"]}]
+    res["missing"] = [k for k in keys if k not in {r["key"] for r in res["products"]}][:50]
+    # charts: one series per product for small selections; with many, the 10 best sellers
+    # + the total of everything selected
+    top = [r["key"] for r in res["products"][:10]]
+    res["series"] = top
+    if len(res["products"]) > 10:
+        for part, dim in (("timeline", "period"), ("by_branch", "branch"), ("by_type", "sales_type"),
+                          ("by_shift", "shift")):
+            tot: dict = {}
+            for r in res[part]:
+                t = tot.setdefault(r[dim], {dim: r[dim], "key": "_all", "sales": 0, "units": 0})
+                t["sales"] += r["sales"] or 0
+                t["units"] += r["units"] or 0
+            res[part] = [r for r in res[part] if r["key"] in top] + list(tot.values())
+        res["series"] = ["_all"] + top
     return res
 
 
@@ -1148,7 +1188,11 @@ def product_detail(key: str, f: Filters, settings: dict) -> dict | None:
         return None
     if key.startswith("c:"):
         cat = q_one("SELECT item_name, item_category, material_group, item_unit, source, subcategory, brand, "
-                    "manufacturer, list_price FROM products WHERE item_code = ?", [key[2:]])()
+                    "manufacturer, list_price, extra FROM products WHERE item_code = ?", [key[2:]])()
+        if cat and cat.get("extra"):
+            ex_ = cat["extra"]
+            order = [c for c in product_columns() if c in ex_] + [c for c in ex_ if c not in product_columns()]
+            k["file_data"] = [{"column": c, "value": ex_[c]} for c in order]
         if cat:
             for x in ("subcategory", "brand", "manufacturer", "list_price"):
                 k[x] = cat[x]

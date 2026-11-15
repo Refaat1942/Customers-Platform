@@ -44,7 +44,13 @@ export default function Products() {
     <>
       <PageHeader title={t("prod.title")} subtitle={t("prod.subtitle")}
         actions={<>
-          <button className="btn-primary" onClick={() => nav(`/products/inspect${picked.length ? "?" + picked.map((k) => "k=" + encodeURIComponent(k)).join("&") : ""}`)}>
+          <button className="btn-primary" onClick={() => {
+            if (picked.length) {
+              const names = Object.fromEntries((res.data?.rows ?? []).map((r: any) => [r.key, [r.code, r.item].filter(Boolean).join(" · ")]));
+              try { sessionStorage.setItem("cp_inspect_sel", JSON.stringify(Object.fromEntries(picked.map((k) => [k, names[k] ?? k.slice(2)])))); } catch { /* */ }
+            }
+            nav("/products/inspect");
+          }}>
             <ScanSearch size={16} /> {picked.length ? t("insp.openN", { n: picked.length }) : t("insp.title")}
           </button>
           <ExportButton path="/products" params={{ ...params, q, sort, desc }} />

@@ -94,7 +94,7 @@ export function StackedBars({ data, x, series, height = 260, colors, grouped = f
 }
 
 /** Several series over time (e.g. selected products), one line each. */
-export function MultiLines({ data, x, series, height = 300, money = false }: { data: any[]; x: string; series: { key: string; name: string }[]; height?: number; money?: boolean }) {
+export function MultiLines({ data, x, series, height = 300, money = false, colors }: { data: any[]; x: string; series: { key: string; name: string }[]; height?: number; money?: boolean; colors?: string[] }) {
   const { i18n } = useTranslation();
   const rtl = i18n.language === "ar";
   return (
@@ -106,7 +106,7 @@ export function MultiLines({ data, x, series, height = 300, money = false }: { d
         <Tooltip content={<TooltipBox money={money} />} cursor={{ stroke: "#9aa19a", strokeDasharray: 3 }} />
         <Legend iconType="plainline" iconSize={14} wrapperStyle={{ fontSize: 12 }} />
         {series.map((s, i) => (
-          <Line key={s.key} type="monotone" dataKey={s.key} name={s.name} stroke={SERIES[i % SERIES.length]} strokeWidth={2}
+          <Line key={s.key} type="monotone" dataKey={s.key} name={s.name} stroke={colors?.[i] ?? SERIES[i % SERIES.length]} strokeWidth={s.key === "_all" ? 3 : 2}
             dot={data.length < 40 ? { r: 2.5 } : false} activeDot={{ r: 4 }} connectNulls />
         ))}
       </LineChart>

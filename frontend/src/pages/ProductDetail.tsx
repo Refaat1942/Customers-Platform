@@ -135,6 +135,19 @@ export default function ProductDetail() {
             ]} />
           </Card>
 
+          {p.file_data?.length > 0 && (
+            <Card title={t("pd.fileData")} help={t("pd.fileDataHelp")}>
+              <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-x-6 gap-y-3 text-sm">
+                {p.file_data.map((x: any) => (
+                  <div key={x.column} className="border-b border-line/60 pb-2">
+                    <div className="text-xs text-muted">{x.column}</div>
+                    <div className="font-semibold break-words num">{typeof x.value === "number" ? (Number.isInteger(x.value) ? String(x.value) : fmtNum(x.value)) : /^\d{4}-\d{2}-\d{2}T/.test(String(x.value)) ? fmtDate(x.value) : String(x.value)}</div>
+                  </div>
+                ))}
+              </div>
+            </Card>
+          )}
+
           {d.names.length > 1 && (
             <Card title={t("pd.otherNames")}>
               <div className="flex flex-wrap gap-2">

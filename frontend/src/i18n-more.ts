@@ -4,12 +4,14 @@ import i18n from "./i18n";
 const en = {
   insp: {
     title: "Product inspector", subtitle: "Choose one or more products and see their sales side by side - pick the sales type, dates and branches with the filters above",
-    pick: "Products to inspect", pickHelp: "Type a code, name or brand and click to add. Add as many as you like (up to 20).", search: "Search product code, name or brand…",
+    pick: "Products to inspect", pickHelp: "Type a code, name or brand and click to add. Or press 'Choose products' to tick many at once, with 'Select all'.", search: "Search product code, name or brand…",
     clear: "Remove all", empty: "Add at least one product above. Tip: on the Products page you can tick several products and open them here together.",
     typeOn: "Only these sales types: {{types}} (change with 'Sales type' in the filters)", show: "Show", every: "Per", day: "Day", week: "Week", month: "Month",
     summary: "Summary", first: "First sold", noSales: "No sales in these filters for: {{items}}", over: { units: "Units sold over time", sales: "Sales over time" },
     byType: "By sales type", byShift: "By shift", byBranch: "By branch", buyers: "Who bought them", which: "Products bought",
-    openN: "Inspect {{n}} selected", tick: "Select to inspect together", compare: "Compare with other products",
+    openN: "Inspect {{n}} selected", choose: "Choose products", orSearch: "or quick add:", selected: "{{n}} selected",
+    selectAll: "Select all {{n}} that match", page: "Select this page", apply: "Inspect {{n}} products", products: "products",
+    allSel: "All {{n}} selected (total)", manyNote: "Charts show the 10 best sellers and a dark line for the total of everything selected; the table lists every product.", tick: "Select to inspect together", compare: "Compare with other products",
   },
   cls: {
     button: "Download classified", title: "Customers classified - Excel",
@@ -56,7 +58,7 @@ const en = {
     days: "{{n}} days",
   },
   pd: {
-    back: "All products", units: "Units sold", sales: "Sales", invoices: "Invoices", customers: "Buyers", avgPrice: "Average price", perInvoice: "Units per invoice",
+    back: "All products", fileData: "All product data (from the product list)", fileDataHelp: "Every column of the product list you uploaded, exactly as in the file.", units: "Units sold", sales: "Sales", invoices: "Invoices", customers: "Buyers", avgPrice: "Average price", perInvoice: "Units per invoice",
     interval: "Customers re-buy every", intervalSub: "median days between two purchases of the same customer", repeat: "Repeat buyers",
     firstLast: "Sold between", byBranch: "Where it sells - branches", topBranch: "Best branch", byMonth: "Units by month", byWeekday: "Units by weekday",
     byHour: "Units by hour of day", byShift: "Units by shift", branchShift: "Branch × shift (units)", intervals: "How long until customers buy it again",
@@ -85,12 +87,14 @@ const en = {
 const ar = {
   insp: {
     title: "فحص الأصناف", subtitle: "اختار صنف أو أكتر وشوف مبيعاتهم جنب بعض - حدد نوع البيع والتواريخ والفروع من الفلاتر اللي فوق",
-    pick: "الأصناف المطلوب فحصها", pickHelp: "اكتب كود أو اسم أو ماركة واضغط للإضافة. ضيف أي عدد (لحد 20).", search: "ابحث بكود الصنف أو اسمه أو الماركة…",
+    pick: "الأصناف المطلوب فحصها", pickHelp: "اكتب كود أو اسم أو ماركة واضغط للإضافة. أو اضغط 'اختيار الأصناف' وعلّم على كتير مرة واحدة، مع 'اختيار الكل'.", search: "ابحث بكود الصنف أو اسمه أو الماركة…",
     clear: "مسح الكل", empty: "ضيف صنف واحد على الأقل فوق. ممكن كمان من صفحة الأصناف تعلّم على أكتر من صنف وتفتحهم هنا مع بعض.",
     typeOn: "أنواع البيع دي بس: {{types}} (غيّرها من 'نوع البيع' في الفلاتر)", show: "اعرض", every: "لكل", day: "يوم", week: "أسبوع", month: "شهر",
     summary: "الملخص", first: "أول بيع", noSales: "مفيش مبيعات في الفلاتر دي لـ: {{items}}", over: { units: "الوحدات المباعة على مدار الوقت", sales: "المبيعات على مدار الوقت" },
     byType: "حسب نوع البيع", byShift: "حسب الوردية", byBranch: "حسب الفرع", buyers: "مين اشتراهم", which: "الأصناف اللي اشتراها",
-    openN: "افحص {{n}} صنف متعلّم", tick: "علّم عشان تفحصهم مع بعض", compare: "قارن بأصناف تانية",
+    openN: "افحص {{n}} صنف متعلّم", choose: "اختيار الأصناف", orSearch: "أو إضافة سريعة:", selected: "{{n}} صنف مختار",
+    selectAll: "اختيار الكل ({{n}}) المطابق", page: "اختيار الصفحة دي", apply: "افحص {{n}} صنف", products: "صنف",
+    allSel: "كل المختار ({{n}}) - الإجمالي", manyNote: "الرسوم بتعرض أعلى 10 أصناف مبيعاً + خط غامق لإجمالي كل المختار؛ الجدول فيه كل الأصناف.", tick: "علّم عشان تفحصهم مع بعض", compare: "قارن بأصناف تانية",
   },
   cls: {
     button: "تحميل العملاء مصنفين", title: "العملاء مصنفين - إكسيل",
@@ -137,7 +141,7 @@ const ar = {
     days: "{{n}} يوم",
   },
   pd: {
-    back: "كل الأصناف", units: "الوحدات المباعة", sales: "المبيعات", invoices: "الفواتير", customers: "المشترين", avgPrice: "متوسط السعر", perInvoice: "وحدات لكل فاتورة",
+    back: "كل الأصناف", fileData: "كل بيانات الصنف (من قائمة الأصناف)", fileDataHelp: "كل أعمدة قائمة الأصناف اللي رفعتها، زي ما هي في الملف.", units: "الوحدات المباعة", sales: "المبيعات", invoices: "الفواتير", customers: "المشترين", avgPrice: "متوسط السعر", perInvoice: "وحدات لكل فاتورة",
     interval: "العملاء بيعيدوا شراءه كل", intervalSub: "الوسيط بالأيام بين مرتين شراء لنفس العميل", repeat: "عملاء كرروا الشراء",
     firstLast: "اتباع في الفترة", byBranch: "بيتباع فين - الفروع", topBranch: "أعلى فرع", byMonth: "الوحدات بالشهر", byWeekday: "الوحدات بأيام الأسبوع",
     byHour: "الوحدات بساعات اليوم", byShift: "الوحدات بالوردية", branchShift: "الفرع × الوردية (وحدات)", intervals: "العميل بيرجع يشتريه بعد قد إيه",

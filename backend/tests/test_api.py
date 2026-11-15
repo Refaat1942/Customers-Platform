@@ -852,3 +852,20 @@ def test_product_inspector(client):
     only = client.get("/api/products/inspect", params={"keys": ["c:100201"], "type": ["Cash"]}).json()
     assert {t["sales_type"] for t in only["by_type"]} == {"Cash"}
     assert client.get("/api/products/inspect", params={"keys": keys, "export": "true"}).content[:2] == b"PK"
+
+
+def test_all_product_file_columns_and_select_all(client):
+    import openpyxl
+    det = client.get("/api/products/detail", params={"key": "c:100202"}).json()["product"]
+    cols = [x["column"] for x in det["file_data"]]
+    assert cols[:3] == ["Created ON", "Last GR Date", "Material Group"] and "Sales Price" in cols
+    wb = openpyxl.load_workbook(io.BytesIO(client.get("/api/products", params={"export": "true"}).content))
+    flat = [c.value for row in wb.active.iter_rows(max_row=10) for c in row]
+    assert "Created ON" in flat and "Last GR Date" in flat
+    allk = client.get("/api/products/keys", params={"only_brand": "DETTOL"}).json()
+    assert allk["total"] >= 1 and all(r["key"].startswith(("c:", "n:")) for r in allk["rows"])
+    every = client.get("/api/products/keys").json()["rows"]
+    r = client.post("/api/products/inspect", json={"keys": [x["key"] for x in every]}).json()
+    assert len(r["products"]) > 10 and r["series"][0] == "_all" and len(r["series"]) == 11
+    assert any(x["key"] == "_all" for x in r["timeline"])
+    assert client.post("/api/products/inspect", json={"keys": [x["key"] for x in every], "export": True}).content[:2] == b"PK"

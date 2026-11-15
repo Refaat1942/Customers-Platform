@@ -1107,9 +1107,13 @@ def run_product_import(import_id: int, path: Path, mapping: dict, mode: str,
             cols["list_price"] = [None if pd.isna(v) else float(v) for v in
                                   _parse_numbers(chunk[mapping["list_price"]])] if have("list_price") \
                 else [None] * len(chunk)
-            for r in zip(*(cols[f] for f in PRODUCT_COLS)):
+            # every column of the file is kept too (stock, margin, vendor, dates...), in file order
+            recs = chunk.to_dict("records")
+            for i, r in enumerate(zip(*(cols[f] for f in PRODUCT_COLS))):
                 if r[0]:
-                    rows[r[0]] = r
+                    extra = {str(k): v for k, v in ((k, _jsonable(v)) for k, v in recs[i].items())
+                             if v is not None and v != ""}
+                    rows[r[0]] = r + (json.dumps(extra, ensure_ascii=False, default=str),)
             _progress(cur, import_id, "cleaning", 5 + 70 * min(read / max(total, 1), 1), rows_read=read)
         if not rows:
             raise ValueError("No product codes found in the chosen column")
@@ -1122,12 +1126,13 @@ def run_product_import(import_id: int, path: Path, mapping: dict, mode: str,
             before = cur.execute("SELECT count(*) FROM products WHERE item_code = ANY(?)",
                                  [list(rows)]).fetchone()[0]
             cur.execute("CREATE TEMP TABLE IF NOT EXISTS _pl (LIKE products) ON COMMIT DROP")
-            with cur.copy(f"COPY _pl ({cols_sql}) FROM STDIN") as cp:
+            with cur.copy(f"COPY _pl ({cols_sql}, extra) FROM STDIN") as cp:
                 for r in rows.values():
                     cp.write_row(r)
-            cur.execute(f"""INSERT INTO products ({cols_sql}, source, import_id)
-                SELECT {cols_sql}, 'file', {int(import_id)} FROM _pl
+            cur.execute(f"""INSERT INTO products ({cols_sql}, extra, source, import_id)
+                SELECT {cols_sql}, extra, 'file', {int(import_id)} FROM _pl
                 ON CONFLICT (item_code) DO UPDATE SET {upd},
+                    extra = coalesce(products.extra, '{{}}'::jsonb) || coalesce(EXCLUDED.extra, '{{}}'::jsonb),
                     source = 'file', import_id = EXCLUDED.import_id, updated_at = now()""")
             _progress(cur, import_id, "saving", 90)
             # a product list is the reference: its names replace the names on sales lines
@@ -1142,6 +1147,10 @@ def run_product_import(import_id: int, path: Path, mapping: dict, mode: str,
                    rows_read=?, rows_imported=?, rows_skipped=?, rows_replaced=?, message=? WHERE id=?""",
                         [read, len(rows), read - len(rows), int(before),
                          f"{filled} sales lines updated", import_id])
+        order = [str(c) for c in (pd.read_csv(path, nrows=0).columns if path.suffix.lower() == ".csv"
+                                  else read_file(path, nrows=1, sheet=sheet).columns)]
+        cur.execute("INSERT INTO settings VALUES ('product_columns', ?) ON CONFLICT (key) DO UPDATE "
+                    "SET value = EXCLUDED.value", [json.dumps(order, ensure_ascii=False)])
         log(f"#{import_id} product list: {len(rows)} products, {filled} sales lines updated")
         db.bump_version()
     except Exception as e:  # noqa: BLE001 - reported to the user
