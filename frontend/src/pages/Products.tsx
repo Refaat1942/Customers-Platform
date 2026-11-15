@@ -24,10 +24,15 @@ export default function Products() {
   const [desc, setDesc] = useState(true);
   useEffect(() => { const h = setTimeout(() => setQ(text.trim()), 350); return () => clearTimeout(h); }, [text]);
   useEffect(() => setPage(1), [q, sort, desc, ...key]); // eslint-disable-line
-  const query = { ...params, q, sort, desc, page, page_size: 50 };
+  const [group, setGroup] = useState<"category" | "subcategory" | "brand" | "manufacturer">("category");
+  const query = { ...params, q, sort, desc, page, page_size: 50, group };
   const res = useQuery({ queryKey: ["products", query], queryFn: () => api.get("/products", query), placeholderData: keepPreviousData });
   const [cats, setCats] = useState<any[]>([]);
-  useEffect(() => { if (res.data?.by_category?.length) setCats(res.data.by_category); }, [res.data]);
+  const [groups, setGroups] = useState<Record<string, boolean>>({});
+  useEffect(() => {
+    if (res.data?.by_category?.length) setCats(res.data.by_category);
+    if (res.data?.groups) setGroups(res.data.groups);
+  }, [res.data]);
   const { can } = useAuth();
   const [names, setNames] = useState<any>(null);
   useEffect(() => { if (res.data?.names) setNames(res.data.names); }, [res.data]);
@@ -45,7 +50,13 @@ export default function Products() {
           </Notice>
         )}
         {cats.length > 0 && (
-          <Card title={t("prod.byCategory")}>
+          <Card title={t(`prod.byGroup.${group}`)} actions={
+            <label className="flex items-center gap-2 text-sm"><span className="text-muted">{t("prod.groupBy")}</span>
+              <select className="input py-1.5 w-auto" value={group} onChange={(e) => setGroup(e.target.value as typeof group)}>
+                {(["category", "subcategory", "brand", "manufacturer"] as const).filter((g) => g === "category" || groups[g] || group === g).map((g) =>
+                  <option key={g} value={g}>{g === "category" ? t("col.category") : t(`col.${g}`)}</option>)}
+              </select>
+            </label>}>
             <RankBars data={cats.slice(0, 15)} label="category" value="sales" name={t("col.sales")} />
           </Card>
         )}
@@ -61,7 +72,9 @@ export default function Products() {
               columns={[
                 c("code", { className: "font-mono text-xs whitespace-nowrap", render: (r: any) => r.code ?? "–" }),
                 c("item", { className: "max-w-80 truncate font-medium", render: (r: any) => r.item ?? <span className="text-muted italic font-normal">{t("prod.noName")}</span> }),
-                { key: "category", label: t("col.category"), render: (r: any) => r.category ?? r.material_group ?? "–" },
+                c("category", { render: (r: any) => r.category ?? r.material_group ?? "–" }),
+                ...(groups.subcategory ? [c("subcategory", { render: (r: any) => r.subcategory ?? "–" })] : []),
+                ...(groups.brand ? [c("brand", { render: (r: any) => r.brand ?? "–" })] : []),
                 c("sales", { num: true, render: (r: any) => fmtMoney(r.sales) }),
                 c("share", { num: true, render: (r: any) => fmtPct(r.share) }),
                 c("quantity", { num: true, render: (r: any) => fmtNum(r.quantity) }),

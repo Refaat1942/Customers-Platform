@@ -32,10 +32,10 @@ const en = {
   },
   nav: { shifts: "Shifts" },
   navHint: { shifts: "Night, morning and evening: sales, branches, live POS vs files", customers: "Everyone who bought + your customer lists" },
-  col: { code: "Product code", item: "Product name", units: "Units", branches: "Branches", avg_days_between: "Re-buys every", shift: "Shift", purchases: "Purchases", last_bought: "Last bought", units_per_day: "Units / day", pct: "% of its invoices", hour: "Hour" },
+  col: { subcategory: "Sub-category", brand: "Brand", manufacturer: "Manufacturer", list_price: "List price", code: "Product code", item: "Product name", units: "Units", branches: "Branches", avg_days_between: "Re-buys every", shift: "Shift", purchases: "Purchases", last_bought: "Last bought", units_per_day: "Units / day", pct: "% of its invoices", hour: "Hour" },
   cust: { tabBought: "Customers who bought", tabBase: "Everyone in customer lists", tabsHelp: "The first tab is built from sales (invoices). The second shows every phone in the customer lists you uploaded, including people who never bought." },
   prod: {
-    noName: "(no name in file)",
+    noName: "(no name in file)", groupBy: "Group by", byGroup: { category: "Sales by category", subcategory: "Sales by sub-category", brand: "Sales by brand", manufacturer: "Sales by manufacturer" },
     namesMissing: "{{n}} product codes have no name in any uploaded file, so they show only their code.",
     namesFix: "Upload a product list (an Excel with item code + item name) from Data upload - every sale with that code gets the name automatically.",
     open: "Click a product to see its branches, months, hours, shifts and buyers.",
@@ -61,6 +61,7 @@ const en = {
     fav: "Usual shift",
   },
   imp: {
+    fields: { subcategory: "Sub-category", brand: "Brand", manufacturer: "Manufacturer", list_price: "Sales price" },
     kinds: { products: "Product list (codes + names)" },
     kindReason: { codes_names: "Detected: product codes + names, no phones or dates → product list (fills product names in all sales)" },
     modes: { upsert_products: "Add / update products", replace_all_products: "Replace the whole product list" },
@@ -98,10 +99,10 @@ const ar = {
   },
   nav: { shifts: "الورديات" },
   navHint: { shifts: "الليل والصباح والمساء: المبيعات والفروع والكاشير المباشر مقابل الملفات", customers: "كل من اشترى + قوائم العملاء المرفوعة" },
-  col: { code: "كود الصنف", item: "اسم الصنف", units: "الوحدات", branches: "الفروع", avg_days_between: "يعيد الشراء كل", shift: "الوردية", purchases: "مرات الشراء", last_bought: "آخر شراء", units_per_day: "وحدات / يوم", pct: "% من فواتيره", hour: "الساعة" },
+  col: { subcategory: "الفئة الفرعية", brand: "الماركة", manufacturer: "الشركة المصنعة", list_price: "سعر البيع", code: "كود الصنف", item: "اسم الصنف", units: "الوحدات", branches: "الفروع", avg_days_between: "يعيد الشراء كل", shift: "الوردية", purchases: "مرات الشراء", last_bought: "آخر شراء", units_per_day: "وحدات / يوم", pct: "% من فواتيره", hour: "الساعة" },
   cust: { tabBought: "العملاء اللي اشتروا", tabBase: "كل العملاء في القوائم", tabsHelp: "التبويب الأول مبني من المبيعات (الفواتير). التاني فيه كل رقم في قوائم العملاء اللي رفعتها، حتى اللي لسه ما اشتروش." },
   prod: {
-    noName: "(بدون اسم في الملف)",
+    noName: "(بدون اسم في الملف)", groupBy: "التجميع حسب", byGroup: { category: "المبيعات حسب الفئة", subcategory: "المبيعات حسب الفئة الفرعية", brand: "المبيعات حسب الماركة", manufacturer: "المبيعات حسب الشركة المصنعة" },
     namesMissing: "{{n}} كود صنف ملهمش اسم في أي ملف مرفوع، فبيظهر الكود بس.",
     namesFix: "ارفع قائمة أصناف (إكسيل فيه كود الصنف + اسم الصنف) من رفع البيانات - كل مبيعات الكود ده هتاخد الاسم تلقائياً.",
     open: "اضغط على أي صنف لتشوف فروعه وشهوره وساعاته وورديات بيعه والمشترين.",
@@ -127,6 +128,7 @@ const ar = {
     fav: "الوردية المعتادة",
   },
   imp: {
+    fields: { subcategory: "الفئة الفرعية", brand: "الماركة", manufacturer: "الشركة المصنعة", list_price: "سعر البيع" },
     kinds: { products: "قائمة أصناف (أكواد + أسماء)" },
     kindReason: { codes_names: "تم التعرف: أكواد وأسماء أصناف من غير موبايلات أو تواريخ ← قائمة أصناف (بتكمل أسماء الأصناف في كل المبيعات)" },
     modes: { upsert_products: "إضافة / تحديث الأصناف", replace_all_products: "استبدال قائمة الأصناف بالكامل" },

@@ -907,6 +907,7 @@ def shifts(f: Filters, settings: dict) -> dict:
 
 # ====================================================================== products
 PRODUCT_SORTS = {"sales", "quantity", "invoices", "customers", "repeat_rate", "avg_price", "item",
+                 "brand", "subcategory", "manufacturer", "category",
                  "code", "last_sold", "share", "branches", "avg_days_between"}
 
 # one product = one code (names differ between reports); lines without a code use the name
@@ -921,16 +922,25 @@ def _product_cond(key: str) -> tuple[str, list]:
     return "FALSE", []
 
 
+PRODUCT_GROUPS = {
+    "category": "coalesce(s.item_category, pc.item_category, s.material_group, '-')",
+    "subcategory": "coalesce(pc.subcategory, '-')",
+    "brand": "coalesce(pc.brand, '-')",
+    "manufacturer": "coalesce(pc.manufacturer, '-')",
+}
+
+
 def products(f: Filters, *, q=None, sort="sales", desc=True, page=1, page_size=50,
-             limit_all=False) -> dict:
+             limit_all=False, group="category") -> dict:
     """Per product (by code): sales, units, invoices, buyers, repeat buyers, price, best branch,
     re-purchase interval."""
     cur = db.cursor()
     w, p = f.where()
     cond, cp = "", []
     if q:
-        cond = "WHERE item ILIKE ? OR code ILIKE ? OR category ILIKE ?"
-        cp = [f"%{q}%"] * 3
+        cond = ("WHERE item ILIKE ? OR code ILIKE ? OR category ILIKE ? OR subcategory ILIKE ? "
+                "OR brand ILIKE ? OR manufacturer ILIKE ?")
+        cp = [f"%{q}%"] * 6
     sort = sort if sort in PRODUCT_SORTS else "sales"
     sql = f"""
       WITH s AS (SELECT {PRODUCT_KEY} AS key, * FROM sales
@@ -951,6 +961,8 @@ def products(f: Filters, *, q=None, sort="sales", desc=True, page=1, page_size=5
                           coalesce(mode() WITHIN GROUP (ORDER BY s.item_category), min(pc.item_category))
                             AS category,
                           mode() WITHIN GROUP (ORDER BY s.material_group) AS material_group,
+                          min(pc.subcategory) AS subcategory, min(pc.brand) AS brand,
+                          min(pc.manufacturer) AS manufacturer, min(pc.list_price) AS list_price,
                           {R("sum(item_price)")} AS sales, sum(quantity) AS quantity,
                           count(DISTINCT visit_key) AS invoices, count(DISTINCT branch) AS branches,
                           {R("sum(item_price) / nullif(sum(quantity), 0)")} AS avg_price,
@@ -973,11 +985,14 @@ def products(f: Filters, *, q=None, sort="sales", desc=True, page=1, page_size=5
     extra = {}
     if page == 1 and not limit_all:
         extra = parallel({
-            "by_category": q_rows(f"""SELECT coalesce(item_category, material_group, '-') AS category,
-                {R("sum(item_price)")} AS sales, round(sum(quantity)::numeric, 0)::float8 AS units,
-                count(DISTINCT {PRODUCT_KEY}) AS products,
-                count(DISTINCT phone) AS customers FROM sales WHERE {w}
+            "by_category": q_rows(f"""SELECT {PRODUCT_GROUPS.get(group, PRODUCT_GROUPS["category"])} AS category,
+                {R("sum(s.item_price)")} AS sales, round(sum(s.quantity)::numeric, 0)::float8 AS units,
+                count(DISTINCT coalesce('c:' || s.item_code, 'n:' || s.item_name)) AS products,
+                count(DISTINCT s.phone) AS customers
+                FROM sales s LEFT JOIN products pc ON pc.item_code = s.item_code WHERE {f.where("s")[0]}
                 GROUP BY 1 ORDER BY sales DESC LIMIT 30""", p),
+            "groups": q_one("""SELECT count(subcategory) > 0 AS subcategory, count(brand) > 0 AS brand,
+                count(manufacturer) > 0 AS manufacturer FROM products"""),
             "names": q_one(f"""SELECT count(DISTINCT item_code) AS codes,
                 count(DISTINCT item_code) FILTER (WHERE item_name IS NULL AND NOT EXISTS
                     (SELECT 1 FROM products pc WHERE pc.item_code = sales.item_code AND pc.item_name IS NOT NULL))
@@ -986,7 +1001,7 @@ def products(f: Filters, *, q=None, sort="sales", desc=True, page=1, page_size=5
                 FROM sales WHERE {w}""", p),
         })
     return {"rows": rows, "total": total, "by_category": extra.get("by_category", []),
-            "names": extra.get("names")}
+            "names": extra.get("names"), "groups": extra.get("groups")}
 
 
 def product_detail(key: str, f: Filters, settings: dict) -> dict | None:
@@ -1061,9 +1076,13 @@ def product_detail(key: str, f: Filters, settings: dict) -> dict | None:
     if not k or not k["invoices"]:
         return None
     if key.startswith("c:"):
-        cat = q_one("SELECT item_name, item_category, material_group, item_unit, source FROM products "
-                    "WHERE item_code = ?", [key[2:]])()
+        cat = q_one("SELECT item_name, item_category, material_group, item_unit, source, subcategory, brand, "
+                    "manufacturer, list_price FROM products WHERE item_code = ?", [key[2:]])()
         if cat:
+            for x in ("subcategory", "brand", "manufacturer", "list_price"):
+                k[x] = cat[x]
+            k["material_group"] = k.get("material_group") or cat["material_group"]
+            k["unit"] = k.get("unit") or cat["item_unit"]
             k["item"] = cat["item_name"] or k["item"]
             k["category"] = k["category"] or cat["item_category"]
             k["catalogue"] = cat["source"]

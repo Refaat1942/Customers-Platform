@@ -600,21 +600,23 @@ def get_directory(user: dict = Depends(require("customer_base")), q: str | None 
 @router.get("/products")
 def get_products(f: an.Filters = Depends(filters), q: str | None = None, sort: str = "sales",
                  desc: bool = True, page: int = Query(1, ge=1),
+                 group: Literal["category", "subcategory", "brand", "manufacturer"] = "category",
                  page_size: int = Query(50, ge=1, le=500), export: bool = False,
                  lang: str = "en", user: dict = Depends(require("products"))):
     if export:
         need_export(user)
         res = an.products(f, q=q, sort=sort, desc=desc, limit_all=True)
         audit(user, "export", f"products ({res['total']}) {filter_text(f)}")
-        cols = ["code", "item", "category", "material_group", "sales", "share", "quantity",
+        cols = ["code", "item", "category", "subcategory", "brand", "manufacturer", "material_group",
+                "list_price", "sales", "share", "quantity",
                 "invoices", "customers", "repeat_buyers", "repeat_rate", "times_per_buyer",
                 "avg_days_between", "avg_price", "branches", "top_branch", "first_sold", "last_sold"]
         sheet = "الأصناف" if lang == "ar" else "Products"
         return xlsx_response(ex.workbook([(sheet, ex.frame(res["rows"], cols, lang))], lang, sheet,
                                          filter_meta(f, lang)), "products_report.xlsx")
-    return db.cached(("products", f.key(), q, sort, desc, page, page_size),
+    return db.cached(("products", f.key(), q, sort, desc, page, page_size, group),
                      lambda: an.products(f, q=q, sort=sort, desc=desc, page=page,
-                                         page_size=page_size))
+                                         page_size=page_size, group=group))
 
 
 @router.get("/products/detail")

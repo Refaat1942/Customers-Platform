@@ -790,3 +790,26 @@ def test_invoice_number_repeated_on_many_days_is_not_one_visit(client):
     assert c["visits"] == 3
     prof = client.get(f"/api/customers/{c['cid']}").json()
     assert len(prof["visits"]) == 3
+
+
+def test_sap_material_list_with_dates_prices_and_empty_codes(client):
+    """Product master like an SAP export: has a date and prices, numeric codes and an empty code."""
+    data = _headerless([
+        ["Created ON", "Last GR Date", "Material Group", "Brand", "Manufacturer", "Main Category", "SubCategory 1",
+         "Material", "Material description", "BUn", "Sales Price"],
+        ["1/29/19", "12/4/22", "COSM LOCAL", "CHI", "FAROUK SYSTEMS", "NON-PHARMA", "BEAUTY", 2002485, "CHI SHAMPOO 355ML", "PAC", 985],
+        ["1/29/19", "12/4/22", "COSM LOCAL", "DETTOL", "RECKITT", "NON-PHARMA", "HOME SUPPLIES", 100202, "VITAMIN C 1000 MG", "PAC", 56.5],
+        ["1/29/19", None, "COSM LOCAL", None, None, None, None, None, "NO CODE ROW", "PAC", None],
+    ])
+    up = upload(client, data, "products 15.11.2026.XLSX")
+    sh = up["sheets_info"][0]
+    assert sh["kind"] == "products", sh["kind_reason"]
+    m = sh["mappings"]["products"]
+    assert (m["item_code"], m["item_name"], m["subcategory"], m["brand"], m["list_price"]) == \
+        ("Material", "Material description", "SubCategory 1", "Brand", "Sales Price")
+    st = _commit_and_wait(client, up, "products", "upsert", m)
+    assert st["status"] == "done" and st["rows_imported"] == 2, st
+    det = client.get("/api/products/detail", params={"key": "c:100202"}).json()["product"]
+    assert det["item"] == "VITAMIN C 1000 MG" and det["brand"] == "DETTOL" and det["list_price"] == 56.5
+    p = client.get("/api/products", params={"group": "brand"}).json()
+    assert p["groups"]["brand"] and any(r["category"] == "DETTOL" for r in p["by_category"])

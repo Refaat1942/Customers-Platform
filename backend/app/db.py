@@ -161,6 +161,11 @@ CREATE TABLE IF NOT EXISTS products (
     updated_at TIMESTAMP DEFAULT now()
 );
 
+ALTER TABLE products ADD COLUMN IF NOT EXISTS subcategory TEXT;
+ALTER TABLE products ADD COLUMN IF NOT EXISTS brand TEXT;
+ALTER TABLE products ADD COLUMN IF NOT EXISTS manufacturer TEXT;
+ALTER TABLE products ADD COLUMN IF NOT EXISTS list_price DOUBLE PRECISION;
+
 -- branch list: code as used in the sales files / POS (e.g. CA28) -> readable name
 CREATE TABLE IF NOT EXISTS branches (
     code TEXT PRIMARY KEY,

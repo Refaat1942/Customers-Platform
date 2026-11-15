@@ -438,8 +438,7 @@ def detect_kind(sales_map: dict, cust_map: dict) -> tuple[str, str]:
                                                  "district", "area", "region"))
     if cust_map.get("phone") and has_details:
         return "customers", "no_dates_amounts"
-    if sales_map.get("item_code") and sales_map.get("item_name") and not sales_map.get("phone") \
-            and not sales_map.get("invoice_date"):
+    if sales_map.get("item_code") and sales_map.get("item_name") and not sales_map.get("phone"):
         return "products", "codes_names"
     return "sales", "unknown"
 
@@ -517,7 +516,7 @@ def analyse_sheet(path: Path, sheet: str | None) -> dict:
         return {"sheet": sheet, "kind": "empty", "kind_reason": "empty", "columns": cols,
                 "mappings": {"sales": {}, "customers": {}, "products": {}}, "mapping": {}, "sample": [], "rows": 0}
     maps = suggest_mappings(cols, df)
-    maps["products"] = {f: maps["sales"].get(f) for f in PRODUCT_COLS}
+    maps["products"] = product_mapping(cols, maps["sales"])
     kind, reason = detect_kind(maps["sales"], maps["customers"])
     if reason == "unknown":
         kind = "skip"
@@ -1030,7 +1029,45 @@ def refresh_catalogue(conn) -> int:
     return n
 
 
-PRODUCT_COLS = ["item_code", "item_name", "item_category", "material_group", "item_unit"]
+PRODUCT_COLS = ["item_code", "item_name", "item_category", "subcategory", "brand", "manufacturer",
+                "material_group", "item_unit", "list_price"]
+PRODUCT_TEXT = [c for c in PRODUCT_COLS if c != "list_price"]
+
+# product master files (SAP material list, POS item list...): header words per field, best first
+PRODUCT_KEYWORDS = {
+    "item_code": ["material", "item code", "material code", "material number", "product code", "sku",
+                  "code", "item no", "article", "كود الصنف", "الكود", "كود"],
+    "item_name": ["material description", "item description", "item name", "product name", "description",
+                  "product", "name", "اسم الصنف", "الصنف", "الوصف"],
+    "item_category": ["main category", "category", "class", "الفئة", "التصنيف", "القسم"],
+    "subcategory": ["subcategory 1", "sub category 1", "subcategory", "sub category", "sub class",
+                    "الفئة الفرعية"],
+    "brand": ["brand", "الماركة", "البراند"],
+    "manufacturer": ["manufacturer", "company", "الشركة المصنعة", "الشركة"],
+    "material_group": ["material group", "group", "المجموعة"],
+    "item_unit": ["bun", "base unit", "uom", "unit", "الوحدة"],
+    "list_price": ["sales price", "selling price", "retail price", "price", "سعر البيع", "السعر"],
+}
+
+
+def product_mapping(columns, fallback: dict | None = None) -> dict:
+    """Columns of a product list: exact header first, then a header starting with the word."""
+    names = {c: clean_col_name(c) for c in columns}
+    used, out = set(), {}
+    for field in PRODUCT_COLS:
+        pick = None
+        for kw in PRODUCT_KEYWORDS[field]:
+            pick = next((c for c, n in names.items() if n == kw and c not in used), None) or \
+                   next((c for c, n in names.items() if n.startswith(kw + " ") and c not in used
+                         and field not in ("item_code", "item_name")), None)
+            if pick:
+                break
+        if not pick and fallback and fallback.get(field) not in used:
+            pick = fallback.get(field)
+        out[field] = pick
+        if pick:
+            used.add(pick)
+    return out
 
 
 def run_product_import(import_id: int, path: Path, mapping: dict, mode: str,
@@ -1043,34 +1080,37 @@ def run_product_import(import_id: int, path: Path, mapping: dict, mode: str,
             raise ValueError("Missing required column: item_code")
         _progress(cur, import_id, "reading", 1)
         rows, read = {}, 0
+        text = lambda v: v if isinstance(v, str) and v else None  # noqa: E731 - NaN/None -> None
         for chunk, total in iter_chunks(path, sheet):
             _check_cancel(import_id)
             read += len(chunk)
-            cols = {f: list(_clean_text(chunk[mapping[f]])) if mapping.get(f) and mapping[f] in chunk.columns
-                    else [None] * len(chunk) for f in PRODUCT_COLS}
+            have = lambda f: mapping.get(f) and mapping[f] in chunk.columns  # noqa: E731
+            cols = {f: [text(v) for v in _clean_text(chunk[mapping[f]])] if have(f) else [None] * len(chunk)
+                    for f in PRODUCT_TEXT}
+            cols["list_price"] = [None if pd.isna(v) else float(v) for v in
+                                  _parse_numbers(chunk[mapping["list_price"]])] if have("list_price") \
+                else [None] * len(chunk)
             for r in zip(*(cols[f] for f in PRODUCT_COLS)):
                 if r[0]:
                     rows[r[0]] = r
             _progress(cur, import_id, "cleaning", 5 + 70 * min(read / max(total, 1), 1), rows_read=read)
+        if not rows:
+            raise ValueError("No product codes found in the chosen column")
         _progress(cur, import_id, "saving", 80)
+        cols_sql = ", ".join(PRODUCT_COLS)
+        upd = ", ".join(f"{c} = coalesce(EXCLUDED.{c}, products.{c})" for c in PRODUCT_COLS if c != "item_code")
         with conn.transaction():
             if mode == "replace_all":
                 cur.execute("DELETE FROM products WHERE source = 'file'")
             before = cur.execute("SELECT count(*) FROM products WHERE item_code = ANY(?)",
                                  [list(rows)]).fetchone()[0]
             cur.execute("CREATE TEMP TABLE IF NOT EXISTS _pl (LIKE products) ON COMMIT DROP")
-            with cur.copy("COPY _pl (item_code, item_name, item_category, material_group, item_unit) "
-                          "FROM STDIN") as cp:
+            with cur.copy(f"COPY _pl ({cols_sql}) FROM STDIN") as cp:
                 for r in rows.values():
                     cp.write_row(r)
-            cur.execute(f"""INSERT INTO products (item_code, item_name, item_category, material_group,
-                    item_unit, source, import_id)
-                SELECT item_code, item_name, item_category, material_group, item_unit, 'file', {int(import_id)}
-                FROM _pl ON CONFLICT (item_code) DO UPDATE SET
-                    item_name = coalesce(EXCLUDED.item_name, products.item_name),
-                    item_category = coalesce(EXCLUDED.item_category, products.item_category),
-                    material_group = coalesce(EXCLUDED.material_group, products.material_group),
-                    item_unit = coalesce(EXCLUDED.item_unit, products.item_unit),
+            cur.execute(f"""INSERT INTO products ({cols_sql}, source, import_id)
+                SELECT {cols_sql}, 'file', {int(import_id)} FROM _pl
+                ON CONFLICT (item_code) DO UPDATE SET {upd},
                     source = 'file', import_id = EXCLUDED.import_id, updated_at = now()""")
             _progress(cur, import_id, "saving", 90)
             # a product list is the reference: its names replace the names on sales lines
