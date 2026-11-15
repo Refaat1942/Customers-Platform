@@ -813,3 +813,30 @@ def test_sap_material_list_with_dates_prices_and_empty_codes(client):
     assert det["item"] == "VITAMIN C 1000 MG" and det["brand"] == "DETTOL" and det["list_price"] == 56.5
     p = client.get("/api/products", params={"group": "brand"}).json()
     assert p["groups"]["brand"] and any(r["category"] == "DETTOL" for r in p["by_category"])
+
+
+def test_customer_code_is_not_invoice_number_and_classified_export(client):
+    hdr = ["Site Code", "Customer Code", "Customer", "Cutomer Phone", "Customer address", "Sales Type",
+           "Receipt Date", "Receipt Time", "Material", "Material Name", "uom", "qty", "RSP", "Material Group"]
+    rows = [hdr,
+            ["CA27", 10829, "احمد البهنساوي", "01033316077", "6th Of October", "Delivery", "01/02/2026 0:00", "09:02:00 AM", 10, "SYRINGE 10CM 1PC", "SY", 1, 4.8, "ML"],
+            ["CA27", 10829, "احمد البهنساوي", "01033316077", "6th Of October", "Delivery", "01/02/2026 0:00", "09:02:00 AM", 525, "DELIVERY FEES", "EA", 1, 25, "SERV"],
+            ["GZ03", 10829, "احمد البهنساوي", "01033316077", "6th Of October", "Cash", "05/03/2026 0:00", "07:15:00 PM", 10, "SYRINGE 10CM 1PC", "SY", 2, 9.6, "ML"]]
+    up = upload(client, _headerless(rows), "Customer Sales Report.xlsx")
+    m = up["sheets_info"][0]["mappings"]["sales"]
+    assert m["invoice_no"] is None and m["branch"] == "Site Code" and m["phone"] == "Cutomer Phone"
+    assert m["item_code"] == "Material" and m["invoice_time"] == "Receipt Time"
+    st = _commit_and_wait(client, up, "sales", "merge", m)
+    assert st["status"] == "done", st
+    c = client.get("/api/customers", params={"q": "01033316077"}).json()["rows"][0]
+    assert c["visits"] == 2
+    prof = client.get(f"/api/customers/{c['cid']}").json()
+    assert {v["branch"] for v in prof["visits"]} == {"CA27", "GZ03"}
+    assert all(v["invoice_no"] is None for v in prof["visits"])
+
+    import openpyxl
+    for by in ("segment", "status", "branch", "value", "visits"):
+        r = client.get("/api/customers/classified", params={"by": by, "lang": "ar"})
+        assert r.status_code == 200, r.text
+        wb = openpyxl.load_workbook(io.BytesIO(r.content))
+        assert len(wb.sheetnames) >= 2 and wb.sheetnames[0] == "الملخص"

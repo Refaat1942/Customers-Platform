@@ -2,6 +2,11 @@ import i18n from "./i18n";
 
 /** Texts for products (code + name, product page), shifts, and the merged customers page. */
 const en = {
+  cls: {
+    button: "Download classified", title: "Customers classified - Excel",
+    help: "One summary sheet (customers, sales and share per class) + one sheet per class with its customers, best first. Uses the filters above.",
+    by: { segment: "By segment (champions, loyal, at risk…)", status: "By status (active / needs attention / inactive)", churn: "By churn risk", trend: "By spend trend (growing, declining…)", value: "By spend band", visits: "By number of visits", branch: "By branch", district: "By district" },
+  },
   c360: {
     title: "Customer 360°", open: "360° card", fullProfile: "Full profile", since: "Customer since {{date}}",
     spend: "Total spend", visits: "Visits", visitsShort: "visits", avgInvoice: "Average invoice", maxMin: "Max / min", lastVisit: "Last visit", daysAgo: "{{n}} days ago",
@@ -69,6 +74,11 @@ const en = {
 };
 
 const ar = {
+  cls: {
+    button: "تحميل العملاء مصنفين", title: "العملاء مصنفين - إكسيل",
+    help: "شيت ملخص (عدد العملاء والمبيعات والنسبة لكل تصنيف) + شيت لكل تصنيف فيه عملاؤه من الأعلى للأقل. بيستخدم الفلاتر اللي فوق.",
+    by: { segment: "حسب الشريحة (الأبطال، الأوفياء، في خطر…)", status: "حسب الحالة (نشط / يحتاج متابعة / غير نشط)", churn: "حسب خطر الفقد", trend: "حسب اتجاه الإنفاق (بيزيد، بيقل…)", value: "حسب فئة الإنفاق", visits: "حسب عدد الزيارات", branch: "حسب الفرع", district: "حسب المنطقة" },
+  },
   c360: {
     title: "العميل 360°", open: "بطاقة 360°", fullProfile: "الملف الكامل", since: "عميل من {{date}}",
     spend: "إجمالي المشتريات", visits: "الزيارات", visitsShort: "زيارة", avgInvoice: "متوسط الفاتورة", maxMin: "أعلى / أقل", lastVisit: "آخر زيارة", daysAgo: "من {{n}} يوم",

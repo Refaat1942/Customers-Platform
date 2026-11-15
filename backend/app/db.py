@@ -277,6 +277,18 @@ def _build_indexes():
             if n:
                 _log(f"invoice keys made branch-specific on {n} lines")
                 bump_version()
+            # "Customer Code" columns that older imports used as invoice number: no invoice number
+            from .core.importer import is_customer_code
+            bad = [r[0] for r in conn.execute("SELECT id, mapping FROM imports WHERE kind = 'sales' "
+                                              "AND mapping IS NOT NULL").fetchall()
+                   if is_customer_code((json.loads(r[1]) if isinstance(r[1], str) else (r[1] or {})).get("invoice_no"))]
+            if bad:
+                n = conn.execute("""UPDATE sales SET invoice_no = NULL,
+                        visit_key = coalesce(phone, '?') || '|' || to_char(day, 'YYYY-MM-DD') || '|' || coalesce(branch, '')
+                    WHERE import_id = ANY(%s) AND source IS NULL AND invoice_no IS NOT NULL""", [bad]).rowcount
+                if n:
+                    _log(f"customer codes removed from invoice numbers on {n} lines (imports {bad})")
+                    bump_version()
             # one invoice = one day: file lines whose "invoice number" repeats on several days
             # (a wrongly read column) were merged into one long visit - split them by day
             n = conn.execute("""UPDATE sales SET visit_key = visit_key || '|' || to_char(day, 'YYYY-MM-DD')

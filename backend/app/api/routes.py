@@ -435,6 +435,91 @@ VIEW_PERMS = {"customers": "customers", "business": "business",
               "recommendations": "recommendations"}
 
 
+CLASSIFY_BY = {"segment": "segment", "status": "status", "churn": "churn_risk", "trend": "trend",
+               "branch": "branch", "district": "district", "value": "value_band", "visits": "visit_band"}
+CLASSIFIED_COLS = ["phone", "name", "branch", "district", "total_spent", "visits", "avg_per_visit",
+                   "first_visit", "last_visit", "days_since", "avg_days_between", "expected_next",
+                   "overdue_days", "fav_item", "top_category", "top_sales_type", "status", "segment",
+                   "churn_risk", "trend", "trend_pct", "high_value", "loyal", "action"]
+BANDS = {
+    "value_band": [(10000, ("10,000+", "10,000+")), (5000, ("5,000 - 9,999", "5,000 - 9,999")),
+                   (2000, ("2,000 - 4,999", "2,000 - 4,999")), (1000, ("1,000 - 1,999", "1,000 - 1,999")),
+                   (500, ("500 - 999", "500 - 999")), (float("-inf"), ("< 500", "أقل من 500"))],
+    "visit_band": [(20, ("20+ visits", "20+ زيارة")), (10, ("10-19 visits", "10-19 زيارة")),
+                   (5, ("5-9 visits", "5-9 زيارات")), (2, ("2-4 visits", "2-4 زيارات")),
+                   (float("-inf"), ("1 visit", "زيارة واحدة"))],
+}
+
+
+@router.get("/customers/classified")
+def customers_classified(f: an.Filters = Depends(filters), by: Literal[tuple(CLASSIFY_BY)] = "segment",  # type: ignore[valid-type]
+                         lang: Literal["en", "ar"] = "en", user: dict = Depends(require("customers"))):
+    """Excel: a summary sheet + one sheet per class (segment, status, churn risk, trend, branch,
+    district, spend band or visit band), each with that class's customers, best first."""
+    need_export(user)
+    res = an.list_customers(f, db.get_settings(), sort="total_spent", desc=True, page=1,
+                            page_size=1, limit_all=True)
+    rows = [dict(r) for r in res["rows"]]
+    protect(rows, user)
+    idx = 1 if lang == "ar" else 0
+    names = an.q_one("SELECT json_object_agg(code, name) AS m FROM branches WHERE name IS NOT NULL")() or {}
+    names = names.get("m") or {}
+    col = CLASSIFY_BY[by]
+    groups: dict[str, list] = {}
+    for r in rows:
+        r["action"] = ex.ACTIONS.get(r["status"])
+        if col in BANDS:
+            v = r["total_spent" if col == "value_band" else "visits"] or 0
+            key = next(lbl for lim, lbl in BANDS[col] if v >= lim)[idx]
+        else:
+            v = r.get(col)
+            if v is None or v == "":
+                key = "غير محدد" if lang == "ar" else "Not set"
+            elif col in ("segment", "status", "churn_risk", "trend") and v in ex.VALUES:
+                key = ex.VALUES[v][idx]
+            elif col == "branch" and v in names:
+                key = f"{v} - {names[v]}"
+            else:
+                key = str(v)
+        groups.setdefault(key, []).append(r)
+    order = [lbl[idx] for _, lbl in BANDS[col]] if col in BANDS else \
+        sorted(groups, key=lambda k: -sum(x["total_spent"] or 0 for x in groups[k]))
+    order = [k for k in order if k in groups]
+    total_c = len(rows) or 1
+    total_s = sum(x["total_spent"] or 0 for x in rows) or 1
+    ar = lang == "ar"
+    summary = pd.DataFrame([{
+        ("التصنيف" if ar else "Class"): k,
+        ("العملاء" if ar else "Customers"): len(groups[k]),
+        ("% من العملاء" if ar else "% of customers"): round(100 * len(groups[k]) / total_c, 1),
+        ("المبيعات" if ar else "Sales"): round(sum(x["total_spent"] or 0 for x in groups[k]), 2),
+        ("% من المبيعات" if ar else "% of sales"): round(100 * sum(x["total_spent"] or 0 for x in groups[k]) / total_s, 1),
+        ("متوسط الإنفاق" if ar else "Avg spend"): round(sum(x["total_spent"] or 0 for x in groups[k]) / len(groups[k]), 2),
+        ("متوسط الزيارات" if ar else "Avg visits"): round(sum(x["visits"] or 0 for x in groups[k]) / len(groups[k]), 1),
+    } for k in order])
+    sheets = [("الملخص" if ar else "Summary", summary)]
+    used = {sheets[0][0]}
+    extra = order[30:]  # Excel gets slow with hundreds of sheets: the rest go together
+    for k in order[:30]:
+        nm = re.sub(r"[\[\]:*?/\\]", " ", k)[:28].strip() or "-"
+        while nm in used:
+            nm = nm[:26] + "_" + str(len(used))
+        used.add(nm)
+        sheets.append((nm, ex.frame(groups[k], CLASSIFIED_COLS, lang)))
+    if extra:
+        rest = [x for k in extra for x in groups[k]]
+        sheets.append(("أخرى" if ar else "Others", ex.frame(rest, [col] + CLASSIFIED_COLS if col not in BANDS
+                                                             else CLASSIFIED_COLS, lang)))
+    by_label = {"segment": ("Segment", "الشريحة"), "status": ("Status", "الحالة"),
+                "churn": ("Churn risk", "خطر الفقد"), "trend": ("Spend trend", "اتجاه الإنفاق"),
+                "branch": ("Branch", "الفرع"), "district": ("District", "المنطقة"),
+                "value": ("Spend band", "فئة الإنفاق"), "visits": ("Visits band", "فئة الزيارات")}[by][idx]
+    audit(user, "export", f"classified customers by {by} ({len(rows)}) {filter_text(f)}")
+    title = f"{'العملاء مصنفين حسب' if ar else 'Customers classified by'} {by_label}"
+    return xlsx_response(ex.workbook(sheets, lang, title, filter_meta(f, lang)),
+                         f"customers_by_{by}.xlsx")
+
+
 @router.get("/customers")
 def get_customers(
     f: an.Filters = Depends(filters),

@@ -2,8 +2,8 @@ import { lazy, Suspense, useEffect, useState, type ReactNode } from "react";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { IdCard, Search } from "lucide-react";
-import { api } from "../lib/api";
+import { FileSpreadsheet, IdCard, Loader2, Search } from "lucide-react";
+import { api, download } from "../lib/api";
 import { useFilters } from "../lib/filters";
 import { fmtDate, fmtInt, fmtMoney, fmtNum } from "../lib/format";
 import FilterBar from "../components/FilterBar";
@@ -126,7 +126,7 @@ function CustomerList({ view, header }: { view: View; header?: (actions: ReactNo
   return (
     <>
       {(() => {
-        const actions = <ExportButton path="/customers" params={{ ...query, page: undefined, page_size: undefined }} />;
+        const actions = <>{view === "customers" && <ClassifiedButton params={params} />}<ExportButton path="/customers" params={{ ...query, page: undefined, page_size: undefined }} /></>;
         return header ? header(actions) : <PageHeader title={titles[view][0]} subtitle={titles[view][1]} actions={actions} />;
       })()}
       <FilterBar />
@@ -167,6 +167,45 @@ export function TrendBadge({ r, t }: { r: any; t: (k: string) => string }) {
     <span className="inline-flex items-center gap-1.5">
       <Badge kind={kind[r.trend] || undefined}>{t(`trend.${r.trend}`)}</Badge>
       {r.trend_pct != null && <span className={r.trend_pct >= 0 ? "text-good text-xs num" : "text-bad text-xs num"}>{r.trend_pct >= 0 ? "+" : ""}{Math.round(r.trend_pct)}%</span>}
+    </span>
+  );
+}
+
+const CLASSES = ["segment", "status", "churn", "trend", "value", "visits", "branch", "district"] as const;
+
+/** Excel with a summary + one sheet per class (segment, status, branch, spend band...). */
+function ClassifiedButton({ params }: { params: Record<string, any> }) {
+  const { t, i18n } = useTranslation();
+  const { can } = useAuth();
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  if (!can("export")) return null;
+  const go = async (by: string) => {
+    setBusy(by); setErr(null);
+    try { await download("/customers/classified", { ...params, by, lang: i18n.language }); setOpen(false); }
+    catch (e) { setErr((e as Error).message); }
+    setBusy(null);
+  };
+  return (
+    <span className="relative inline-flex flex-col">
+      <button className="btn-primary" onClick={() => setOpen(!open)}><FileSpreadsheet size={16} /> {t("cls.button")}</button>
+      {open && (
+        <div className="absolute start-0 top-full mt-2 z-30 w-80 max-w-[90vw] card p-3 shadow-xl">
+          <div className="text-sm font-semibold mb-1">{t("cls.title")}</div>
+          <div className="text-xs text-muted mb-3">{t("cls.help")}</div>
+          <div className="grid gap-1">
+            {CLASSES.map((c) => (
+              <button key={c} disabled={!!busy} onClick={() => go(c)}
+                className="flex items-center gap-2 text-start rounded-lg px-3 py-2 text-sm hover:bg-brand-soft cursor-pointer">
+                {busy === c ? <Loader2 size={15} className="animate-spin" /> : <FileSpreadsheet size={15} className="text-brand" />}
+                <span className="flex-1">{t(`cls.by.${c}`)}</span>
+              </button>
+            ))}
+          </div>
+          {err && <div className="text-xs text-bad mt-2">{err}</div>}
+        </div>
+      )}
     </span>
   );
 }

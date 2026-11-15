@@ -240,10 +240,25 @@ PRICE_HINTS = ("price", "amount", "total", "net", "value", "sales", "revenue", "
                "اجمالي", "إجمالي", "egp", "rsp")
 
 
+# "Customer Code", "Client ID", "رقم العميل"... identify the customer, never the invoice
+CUSTOMER_CODE = re.compile(r"(customer|cutomer|client|member|cust|account|عميل).*(code|id|no|num|رقم|كود)"
+                           r"|(code|id|no|رقم|كود).*(customer|client|member|عميل)", re.I)
+
+
+def is_customer_code(col) -> bool:
+    n = clean_col_name(col) if col else ""
+    if not n or re.search(r"phone|mobile|tel|موبايل|تليفون|هاتف|محمول", n):
+        return False
+    return bool(CUSTOMER_CODE.search(n))
+
+
 def smart_sales_mapping(df: pd.DataFrame, mapping: dict, prof: dict) -> dict:
     """Fix / complete the header-based guess using the column values."""
     m = dict(mapping)
+    if is_customer_code(m.get("invoice_no")):
+        m["invoice_no"] = None
     used = {v for v in m.values() if v}
+    used |= {c for c in df.columns if is_customer_code(c)}
 
     def best(metric, min_ratio, exclude=()):
         cands = [(p[metric], c) for c, p in prof.items()
@@ -466,6 +481,8 @@ def suggest_mappings(columns, df: pd.DataFrame) -> dict:
             for f in fields:  # empty fields: take the fresh guess if that column is still free
                 if not checked.get(f) and fresh.get(f) and fresh[f] not in checked.values():
                     checked[f] = fresh[f]
+            if kind == "sales" and is_customer_code(checked.get("invoice_no")):
+                checked["invoice_no"] = None
             out[kind] = checked
         else:
             out[kind] = fresh
