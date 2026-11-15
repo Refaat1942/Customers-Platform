@@ -489,6 +489,15 @@ def get_customer_totals(f: an.Filters = Depends(filters), user: dict = Depends(r
     return db.cached(("filter_totals", f.key()), lambda: an.filter_totals(f))
 
 
+@router.get("/customers/{cid}/card")
+def get_customer_card(cid: str, f: an.Filters = Depends(filters), user: dict = Depends(require("customers"))):
+    """Extra insights for the customer's 360 card (the rest comes from /customers/{cid})."""
+    phone = an.phone_for_cid(cid)
+    if not phone:
+        raise HTTPException(404, "Customer not found")
+    return an.customer_card(phone, f, db.get_settings())
+
+
 @router.get("/customers/{cid}")
 def get_customer(cid: str, f: an.Filters = Depends(filters), export: bool = False,
                  lang: str = "en", user: dict = Depends(require("customers"))):

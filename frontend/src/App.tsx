@@ -15,6 +15,7 @@ const Area = lazy(() => import("./pages/Area"));
 const Products = lazy(() => import("./pages/Products"));
 const ProductDetail = lazy(() => import("./pages/ProductDetail"));
 const Shifts = lazy(() => import("./pages/Shifts"));
+const CustomerCard = lazy(() => import("./pages/CustomerCard"));
 const Live = lazy(() => import("./pages/Live"));
 const DataCheck = lazy(() => import("./pages/DataCheck"));
 const Refills = lazy(() => import("./pages/Refills"));
@@ -58,6 +59,7 @@ export default function App() {
             <Route path="insights" element={<Guard perm="insights"><Insights /></Guard>} />
             <Route path="customers" element={<Customers view="customers" />} />
             <Route path="customers/:cid" element={<Guard perm="customers"><CustomerProfile /></Guard>} />
+            <Route path="customers/:cid/card" element={<Guard perm="customers"><CustomerCard /></Guard>} />
             <Route path="recommendations" element={<Guard perm="recommendations"><Customers view="recommendations" /></Guard>} />
             <Route path="business" element={<Guard perm="business"><Customers view="business" /></Guard>} />
             <Route path="refills" element={<Guard perm="refills"><Refills /></Guard>} />

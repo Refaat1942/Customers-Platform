@@ -77,7 +77,7 @@ export default function ProductDetail() {
               <Card title={t("pd.byShift")}>
                 {hasTime ? (
                   <>
-                    <ShareBar parts={SHIFT_KEYS.map((k) => ({ label: `${shiftName(k)} (${shiftRange(k, sh)})`, value: Math.round(d.shifts.find((s: any) => s.shift === k)?.units ?? 0), color: SHIFT_COLORS[k] }))} />
+                    <ShareBar parts={SHIFT_KEYS.map((k) => ({ label: `${shiftName(k)} (\u2066${shiftRange(k, sh)}\u2069)`, value: Math.round(d.shifts.find((s: any) => s.shift === k)?.units ?? 0), color: SHIFT_COLORS[k] }))} />
                     {d.shifts.some((s: any) => s.shift === "unknown") && <div className="text-xs text-muted mt-2">{t("shift.unknown")}: {fmtNum(d.shifts.find((s: any) => s.shift === "unknown").units)} {t("shift.units")}</div>}
                   </>
                 ) : <Notice kind="info">{t("pd.noTime")}</Notice>}

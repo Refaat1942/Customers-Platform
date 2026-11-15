@@ -2,6 +2,26 @@ import i18n from "./i18n";
 
 /** Texts for products (code + name, product page), shifts, and the merged customers page. */
 const en = {
+  c360: {
+    title: "Customer 360°", open: "360° card", fullProfile: "Full profile", since: "Customer since {{date}}",
+    spend: "Total spend", visits: "Visits", visitsShort: "visits", avgInvoice: "Average invoice", maxMin: "Max / min", lastVisit: "Last visit", daysAgo: "{{n}} days ago",
+    every: "Comes back every", rank: "Rank by spend", rankOf: "of {{n}} customers · top {{pct}}", allTime: "All time", oneVisit: "Only one visit so far",
+    insights: "Insights", rhythm: "Visit rhythm (recurrence)", usualGap: "Usual gap", lastGap: "Last gap", shortest: "Shortest", longest: "Longest",
+    expected: "Next visit expected around {{date}} - on track.", lateBy: "Late by {{n}} days - was expected on {{date}}. Call now.",
+    gapsChart: "Days between visits (each bar = one visit)", daysBetween: "Days since previous visit",
+    spendOverTime: "Spend over time", last90: "Last 90 days", prev90: "Previous 90 days",
+    buys: "What they buy", refills: "Refills (regular products)", cycle: "Every", due: "Due", noRefills: "No product bought on a regular cycle yet.",
+    when: "When they come", where: "Branches & how they pay", details: "Contact & personal data", age: "{{n}} years",
+    reg: { regular: "very regular", fairly_regular: "fairly regular", irregular: "irregular" },
+    tipOverdue: "Overdue: expected on {{date}}, now {{n}} days late - call to bring them back.",
+    tipNext: "Next visit expected around {{date}}.",
+    tipRhythm: "Comes back about every {{n}} days ({{reg}}).",
+    tipRefills: "{{n}} regular product(s) due now: {{items}} - remind them.",
+    tipTop: "A top customer: in the top {{pct}} by spend.",
+    tipTrend: { growing: "Spending is growing: +{{pct}}% in the last 90 days.", declining: "Spending is falling: -{{pct}}% in the last 90 days.", stopped: "Has not bought in the last 90 days." },
+    tipWhen: "Usually comes on {{day}}, {{shift}} shift, at {{branch}}.",
+    tipFav: "Favourite product: {{item}}.", tipDelivery: "Orders mostly by delivery ({{pct}}%).", tipAction: "Recommended",
+  },
   pos: {
     bulkTitle: "Upload branches and devices from Excel (one key per device)",
     bulkHelp: "An Excel with: branch code (like CA28) - branch name - number of POS devices in the branch (optional, empty = 1 device). Branch names are saved and every device without a key gets one. Upload it again with a bigger number and only the extra keys are made.",
@@ -48,6 +68,26 @@ const en = {
 };
 
 const ar = {
+  c360: {
+    title: "العميل 360°", open: "بطاقة 360°", fullProfile: "الملف الكامل", since: "عميل من {{date}}",
+    spend: "إجمالي المشتريات", visits: "الزيارات", visitsShort: "زيارة", avgInvoice: "متوسط الفاتورة", maxMin: "أعلى / أقل", lastVisit: "آخر زيارة", daysAgo: "من {{n}} يوم",
+    every: "بيرجع كل", rank: "ترتيبه بالمشتريات", rankOf: "من {{n}} عميل · أعلى {{pct}}", allTime: "كل الوقت", oneVisit: "زيارة واحدة بس لحد دلوقتي",
+    insights: "ملاحظات ذكية", rhythm: "انتظام الزيارات (التكرار)", usualGap: "الفترة المعتادة", lastGap: "آخر فترة", shortest: "أقصر", longest: "أطول",
+    expected: "الزيارة الجاية متوقعة حوالي {{date}} - ماشي في معاده.", lateBy: "متأخر {{n}} يوم - كان متوقع {{date}}. كلمه دلوقتي.",
+    gapsChart: "الأيام بين الزيارات (كل عمود = زيارة)", daysBetween: "أيام من الزيارة اللي قبلها",
+    spendOverTime: "المشتريات على مدار الوقت", last90: "آخر 90 يوم", prev90: "الـ 90 يوم اللي قبلهم",
+    buys: "بيشتري إيه", refills: "إعادة الشراء (أصناف منتظمة)", cycle: "كل", due: "المعاد", noRefills: "مفيش صنف بيشتريه بانتظام لحد دلوقتي.",
+    when: "بييجي إمتى", where: "الفروع وطريقة الدفع", details: "بيانات التواصل والبيانات الشخصية", age: "{{n}} سنة",
+    reg: { regular: "منتظم جداً", fairly_regular: "منتظم لحد ما", irregular: "مش منتظم" },
+    tipOverdue: "متأخر: كان متوقع {{date}} ودلوقتي متأخر {{n}} يوم - كلمه عشان يرجع.",
+    tipNext: "الزيارة الجاية متوقعة حوالي {{date}}.",
+    tipRhythm: "بيرجع تقريباً كل {{n}} يوم ({{reg}}).",
+    tipRefills: "{{n}} صنف منتظم معاده دلوقتي: {{items}} - فكّره.",
+    tipTop: "من أهم العملاء: في أعلى {{pct}} بالمشتريات.",
+    tipTrend: { growing: "مشترياته بتزيد: +{{pct}}% في آخر 90 يوم.", declining: "مشترياته بتقل: -{{pct}}% في آخر 90 يوم.", stopped: "ما اشتراش في آخر 90 يوم." },
+    tipWhen: "غالباً بييجي يوم {{day}}، وردية {{shift}}، في فرع {{branch}}.",
+    tipFav: "الصنف المفضل: {{item}}.", tipDelivery: "معظم طلباته توصيل ({{pct}}%).", tipAction: "المقترح",
+  },
   pos: {
     bulkTitle: "رفع الفروع والأجهزة من إكسيل (مفتاح لكل جهاز)",
     bulkHelp: "إكسيل فيه: كود الفرع (زي CA28) - اسم الفرع - عدد أجهزة الكاشير في الفرع (اختياري، لو فاضي = جهاز واحد). البرنامج بيحفظ أسماء الفروع وبيعمل مفتاح لكل جهاز ملوش مفتاح. لو رفعت الملف تاني بعدد أكبر، بيعمل المفاتيح الزيادة بس.",

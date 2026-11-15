@@ -1,9 +1,9 @@
 import { Fragment, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { useNavigate, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import clsx from "clsx";
-import { ArrowLeft, ArrowRight, ChevronDown, Loader2, Phone, Search } from "lucide-react";
+import { ArrowLeft, ArrowRight, ChevronDown, IdCard, Loader2, Phone, Search } from "lucide-react";
 import { api } from "../lib/api";
 import { useFilters } from "../lib/filters";
 import { fmtDate, fmtInt, fmtMoney, fmtNum } from "../lib/format";
@@ -31,7 +31,7 @@ export default function CustomerProfile() {
       {q.isLoading ? <Spinner /> : q.error ? <ErrorBox error={q.error} /> : s && (
         <div className="space-y-5">
           <PageHeader title={s.name || s.phone} subtitle={t("cust.profile")}
-            actions={<><ExportButton path={`/customers/${cid}`} params={params} /><PrintButton /></>} />
+            actions={<><Link to={`/customers/${cid}/card`} className="btn-primary"><IdCard size={16} /> {t("c360.open")}</Link><ExportButton path={`/customers/${cid}`} params={params} /><PrintButton /></>} />
           <div className="card p-5 flex flex-wrap items-center gap-x-8 gap-y-3">
             <div className="flex items-center gap-2 font-mono text-lg"><Phone size={18} className="text-brand" />
               {s.phone && !s.phone.includes("*") ? <a href={`tel:${s.phone}`} className="hover:underline">{s.phone}</a> : s.phone}

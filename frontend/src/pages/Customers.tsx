@@ -2,7 +2,7 @@ import { lazy, Suspense, useEffect, useState, type ReactNode } from "react";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { Search } from "lucide-react";
+import { IdCard, Search } from "lucide-react";
 import { api } from "../lib/api";
 import { useFilters } from "../lib/filters";
 import { fmtDate, fmtInt, fmtMoney, fmtNum } from "../lib/format";
@@ -72,6 +72,9 @@ function CustomerList({ view, header }: { view: View; header?: (actions: ReactNo
 
   const c = (k: string, extra: Partial<Column<any>> = {}): Column<any> => ({ key: k, label: t(`col.${k}`), sortable: true, ...extra });
   const nameCol: Column<any>[] = [
+    { key: "x", label: "360°", render: (r: any) => (
+      <button title={t("c360.open")} className="text-brand hover:bg-brand-soft rounded p-1 cursor-pointer" onClick={(e) => { e.stopPropagation(); nav(`/customers/${r.cid}/card`); }}><IdCard size={17} /></button>
+    ) },
     c("phone", { className: "font-mono text-xs" }),
     c("name", { className: "max-w-56 truncate" }),
     c("branch"),

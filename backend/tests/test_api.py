@@ -762,3 +762,12 @@ def test_branch_list_upload_creates_pos_keys(client):
     assert len(client.get("/api/integration/branches").json()) >= 3
     bad = client.post("/api/integration/branches/upload", files={"file": ("x.xlsx", _headerless([["a", "b"], ["x", "y"]]))})
     assert bad.status_code == 400
+
+
+def test_customer_360_card(client):
+    cid = client.get("/api/customers", params={"page_size": 1, "sort": "visits"}).json()["rows"][0]["cid"]
+    c = client.get(f"/api/customers/{cid}/card").json()
+    assert c["rank"]["rank"] >= 1 and c["rank"]["customers"] >= c["rank"]["rank"]
+    assert c["rhythm"] and c["rhythm"]["shortest"] <= c["rhythm"]["median"] <= c["rhythm"]["longest"]
+    assert c["gaps"] and c["yearly"] and c["weekday"] and c["types"]
+    assert client.get("/api/customers/nope/card").status_code == 404

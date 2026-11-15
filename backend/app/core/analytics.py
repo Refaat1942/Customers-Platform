@@ -427,6 +427,55 @@ def customer_profile(phone: str, f: Filters, settings: dict) -> dict | None:
     }
 
 
+def customer_card(phone: str, f: Filters, settings: dict) -> dict:
+    """Extra insights for the 360 card: visit rhythm, rank among all customers, shifts,
+    sales types, weekdays and spend by year."""
+    table, _ = customer_table(f, settings)
+    w, wp = f.where()
+    base = f"FROM sales WHERE phone = ? AND {w}"
+    bp = [phone] + wp
+    sh = shift_sql(settings, "t")
+    tasks = {
+        "gaps": (f"""WITH d AS (SELECT DISTINCT day {base})
+            SELECT day, (day - lag(day) OVER (ORDER BY day))::int AS gap FROM d ORDER BY day""", bp),
+        "rank": (f"""SELECT (SELECT count(*) FROM {table} WHERE total_spent > c.total_spent) + 1 AS rank,
+                (SELECT count(*) FROM {table}) AS customers,
+                (SELECT count(*) FROM {table} WHERE visits > c.visits) + 1 AS visits_rank
+            FROM {table} c WHERE c.phone = ?""", [phone]),
+        "shifts": (f"""WITH v AS (SELECT visit_key, min(invoice_date) AS t, sum(item_price) AS total {base}
+                GROUP BY visit_key)
+            SELECT {sh} AS shift, count(*) AS visits, {R("sum(total)")} AS sales FROM v GROUP BY 1""", bp),
+        "types": (f"""WITH v AS (SELECT visit_key, min(invoice_type) AS stype, sum(item_price) AS total {base}
+                GROUP BY visit_key)
+            SELECT coalesce(stype, '-') AS sales_type, count(*) AS visits, {R("sum(total)")} AS sales
+            FROM v GROUP BY 1 ORDER BY visits DESC""", bp),
+        "weekday": (f"""SELECT extract(isodow FROM day)::int AS dow, count(DISTINCT visit_key) AS visits
+            {base} GROUP BY 1 ORDER BY 1""", bp),
+        "yearly": (f"""SELECT extract(year FROM day)::int AS year, {R("sum(item_price)")} AS sales,
+                count(DISTINCT visit_key) AS visits FROM sales WHERE phone = ?
+            GROUP BY 1 ORDER BY 1""", [phone]),
+    }
+    res = parallel({k: q_rows(*q) for k, q in tasks.items()})
+    gaps = [g["gap"] for g in res["gaps"] if g["gap"] is not None]
+    rhythm = None
+    if len(gaps) >= 2:
+        srt = sorted(gaps)
+        mean = sum(gaps) / len(gaps)
+        sd = (sum((g - mean) ** 2 for g in gaps) / len(gaps)) ** 0.5
+        cv = sd / mean if mean else None
+        rhythm = {"median": srt[len(srt) // 2], "shortest": srt[0], "longest": srt[-1],
+                  "last": gaps[-1], "regularity": None if cv is None else
+                  ("regular" if cv <= 0.5 else "fairly_regular" if cv <= 1 else "irregular")}
+    elif len(gaps) == 1:
+        rhythm = {"median": gaps[0], "shortest": gaps[0], "longest": gaps[0], "last": gaps[0],
+                  "regularity": None}
+    rank = res["rank"][0] if res["rank"] else None
+    if rank and rank["customers"]:
+        rank["top_pct"] = round(100 * rank["rank"] / rank["customers"], 1)
+    return {"gaps": res["gaps"][-36:], "rhythm": rhythm, "rank": rank, "shifts": res["shifts"],
+            "types": res["types"], "weekday": res["weekday"], "yearly": res["yearly"]}
+
+
 VISIT_LINE_COLUMNS = ["invoice_date", "branch", "invoice_no", "invoice_type", "item_code", "item_name",
                       "item_category", "material_group", "quantity", "item_unit", "item_price"]
 
