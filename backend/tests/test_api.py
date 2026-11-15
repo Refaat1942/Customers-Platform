@@ -840,3 +840,15 @@ def test_customer_code_is_not_invoice_number_and_classified_export(client):
         assert r.status_code == 200, r.text
         wb = openpyxl.load_workbook(io.BytesIO(r.content))
         assert len(wb.sheetnames) >= 2 and wb.sheetnames[0] == "الملخص"
+
+
+def test_product_inspector(client):
+    hits = client.get("/api/products/search", params={"q": "vitamin"}).json()
+    assert hits and all("key" in h for h in hits)
+    keys = [h["key"] for h in hits[:2]] + ["c:100201"]
+    r = client.get("/api/products/inspect", params={"keys": keys, "interval": "week",
+                                                    "date_from": "2025-03-01", "date_to": "2025-03-31"}).json()
+    assert r["products"] and r["timeline"] and r["by_type"]
+    only = client.get("/api/products/inspect", params={"keys": ["c:100201"], "type": ["Cash"]}).json()
+    assert {t["sales_type"] for t in only["by_type"]} == {"Cash"}
+    assert client.get("/api/products/inspect", params={"keys": keys, "export": "true"}).content[:2] == b"PK"

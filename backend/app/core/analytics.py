@@ -1004,6 +1004,77 @@ def products(f: Filters, *, q=None, sort="sales", desc=True, page=1, page_size=5
             "names": extra.get("names"), "groups": extra.get("groups")}
 
 
+def product_search(q: str, limit: int = 30) -> list:
+    """Products for the picker: by code, name, brand or category, best sellers first."""
+    like = f"%{q.strip()}%"
+    return db.rows(db.cursor(), f"""WITH s AS (
+            SELECT {PRODUCT_KEY} AS key, min(item_code) AS code, mode() WITHIN GROUP (ORDER BY item_name) AS item,
+                   sum(item_price) AS sales
+            FROM sales WHERE coalesce(item_code, item_name) IS NOT NULL
+              AND (item_code ILIKE ? OR item_name ILIKE ? OR item_category ILIKE ?)
+            GROUP BY 1 ORDER BY sales DESC NULLS LAST LIMIT {int(limit)})
+        SELECT s.key, s.code, coalesce(pc.item_name, s.item) AS item, pc.brand
+        FROM s LEFT JOIN products pc ON pc.item_code = s.code
+        UNION ALL
+        SELECT 'c:' || pc.item_code, pc.item_code, pc.item_name, pc.brand FROM products pc
+        WHERE (pc.brand ILIKE ? OR pc.item_name ILIKE ?) AND pc.item_code NOT IN (SELECT code FROM s WHERE code IS NOT NULL)
+          AND EXISTS (SELECT 1 FROM sales x WHERE x.item_code = pc.item_code)
+        LIMIT {int(limit)}""", [like, like, like, like, like])
+
+
+def product_inspect(keys: list[str], f: Filters, settings: dict, interval: str = "month") -> dict:
+    """Several products side by side within the filters (dates, branches, sales types...)."""
+    keys = [k for k in dict.fromkeys(keys) if k.startswith(("c:", "n:"))][:20]
+    if not keys:
+        return {"products": [], "timeline": [], "by_branch": [], "by_type": [], "by_shift": [], "buyers": []}
+    w, p = f.where()
+    trunc = {"day": "day", "week": "week", "month": "month"}.get(interval, "month")
+    fmt = "YYYY-MM-DD" if trunc != "month" else "YYYY-MM"
+    sh = shift_sql(settings)
+    base = f"FROM sales WHERE {w} AND {PRODUCT_KEY} = ANY(?)"
+    bp = p + [keys]
+    tasks = {
+        "products": (f"""SELECT {PRODUCT_KEY} AS key, min(item_code) AS code,
+                mode() WITHIN GROUP (ORDER BY item_name) AS item,
+                {R("sum(item_price)")} AS sales, round(sum(quantity)::numeric, 1)::float8 AS units,
+                count(DISTINCT visit_key) AS invoices, count(DISTINCT phone) AS customers,
+                count(DISTINCT branch) AS branches,
+                {R("sum(item_price) / nullif(sum(quantity), 0)")} AS avg_price,
+                min(day) AS first_sold, max(day) AS last_sold {base} GROUP BY 1""", bp),
+        "timeline": (f"""SELECT to_char(date_trunc('{trunc}', day), '{fmt}') AS period, {PRODUCT_KEY} AS key,
+                {R("sum(item_price)")} AS sales, round(sum(quantity)::numeric, 1)::float8 AS units,
+                count(DISTINCT visit_key) AS invoices {base} GROUP BY 1, 2 ORDER BY 1""", bp),
+        "by_branch": (f"""SELECT coalesce(branch, '-') AS branch, {PRODUCT_KEY} AS key,
+                {R("sum(item_price)")} AS sales, round(sum(quantity)::numeric, 1)::float8 AS units
+                {base} GROUP BY 1, 2""", bp),
+        "by_type": (f"""SELECT coalesce(invoice_type, '-') AS sales_type, {PRODUCT_KEY} AS key,
+                {R("sum(item_price)")} AS sales, round(sum(quantity)::numeric, 1)::float8 AS units,
+                count(DISTINCT visit_key) AS invoices {base} GROUP BY 1, 2""", bp),
+        "by_shift": (f"""SELECT {sh} AS shift, {PRODUCT_KEY} AS key, {R("sum(item_price)")} AS sales,
+                round(sum(quantity)::numeric, 1)::float8 AS units {base} GROUP BY 1, 2""", bp),
+        "buyers": (f"""SELECT phone, mode() WITHIN GROUP (ORDER BY name) AS name,
+                mode() WITHIN GROUP (ORDER BY branch) AS branch,
+                count(DISTINCT visit_key) AS purchases, round(sum(quantity)::numeric, 1)::float8 AS units,
+                {R("sum(item_price)")} AS sales, max(day) AS last_bought,
+                string_agg(DISTINCT coalesce(item_name, item_code), ' · ') AS products
+                {base} AND phone IS NOT NULL GROUP BY phone ORDER BY sales DESC LIMIT 200""", bp),
+    }
+    res = parallel({k: q_rows(*q) for k, q in tasks.items()})
+    names = {r["item_code"]: r["item_name"] for r in db.rows(db.cursor(),
+             "SELECT item_code, item_name FROM products WHERE item_code = ANY(?) AND item_name IS NOT NULL",
+             [[k[2:] for k in keys if k.startswith("c:")]])}
+    for r in res["products"]:
+        r["item"] = names.get(r["code"]) or r["item"]
+    tot = sum(r["sales"] or 0 for r in res["products"]) or 1
+    for r in res["products"]:
+        r["share"] = round(100 * (r["sales"] or 0) / tot, 1)
+    for r in res["buyers"]:
+        r["cid"] = cid(r["phone"])
+    res["products"].sort(key=lambda r: -(r["sales"] or 0))
+    res["missing"] = [k for k in keys if k not in {r["key"] for r in res["products"]}]
+    return res
+
+
 def product_detail(key: str, f: Filters, settings: dict) -> dict | None:
     """Everything about one product: where, when (month, weekday, hour, shift), how often
     customers come back for it, who buys it and what is bought with it."""

@@ -1,6 +1,6 @@
 import { useTranslation } from "react-i18next";
 import {
-  Area, AreaChart, Bar, BarChart, CartesianGrid, Legend, ResponsiveContainer, Tooltip, XAxis, YAxis,
+  Area, AreaChart, Bar, BarChart, CartesianGrid, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from "recharts";
 import { fmtCompact, fmtMoney } from "../lib/format";
 
@@ -73,7 +73,7 @@ export function RankBars({ data, label, value, name, height, money = true, onCli
 }
 
 /** Two or more series stacked per category (e.g. new vs returning per month). */
-export function StackedBars({ data, x, series, height = 260, colors }: { data: any[]; x: string; series: { key: string; name: string }[]; height?: number; colors?: string[] }) {
+export function StackedBars({ data, x, series, height = 260, colors, grouped = false, money = false }: { data: any[]; x: string; series: { key: string; name: string }[]; height?: number; colors?: string[]; grouped?: boolean; money?: boolean }) {
   const { i18n } = useTranslation();
   const rtl = i18n.language === "ar";
   return (
@@ -82,13 +82,34 @@ export function StackedBars({ data, x, series, height = 260, colors }: { data: a
         <CartesianGrid stroke={GRID} vertical={false} />
         <XAxis dataKey={x} tick={AXIS} tickLine={false} axisLine={{ stroke: GRID }} reversed={rtl} minTickGap={12} />
         <YAxis tick={AXIS} tickLine={false} axisLine={false} tickFormatter={fmtCompact} width={44} orientation={rtl ? "right" : "left"} />
-        <Tooltip content={<TooltipBox money={false} />} cursor={{ fill: "rgba(0,0,0,0.04)" }} />
+        <Tooltip content={<TooltipBox money={money} />} cursor={{ fill: "rgba(0,0,0,0.04)" }} />
         <Legend iconType="square" iconSize={10} wrapperStyle={{ fontSize: 12 }} />
         {series.map((s, i) => (
-          <Bar key={s.key} dataKey={s.key} name={s.name} stackId="a" fill={(colors ?? SERIES)[i]} stroke="#fff" strokeWidth={1}
-            radius={i === series.length - 1 ? [4, 4, 0, 0] : [0, 0, 0, 0]} maxBarSize={36} />
+          <Bar key={s.key} dataKey={s.key} name={s.name} stackId={grouped ? undefined : "a"} fill={(colors ?? SERIES)[i % (colors ?? SERIES).length]} stroke="#fff" strokeWidth={1}
+            radius={grouped || i === series.length - 1 ? [4, 4, 0, 0] : [0, 0, 0, 0]} maxBarSize={grouped ? 22 : 36} />
         ))}
       </BarChart>
+    </ResponsiveContainer></div>
+  );
+}
+
+/** Several series over time (e.g. selected products), one line each. */
+export function MultiLines({ data, x, series, height = 300, money = false }: { data: any[]; x: string; series: { key: string; name: string }[]; height?: number; money?: boolean }) {
+  const { i18n } = useTranslation();
+  const rtl = i18n.language === "ar";
+  return (
+    <div dir="ltr"><ResponsiveContainer width="100%" height={height}>
+      <LineChart data={data} margin={{ top: 8, right: 12, left: 8, bottom: 0 }}>
+        <CartesianGrid stroke={GRID} vertical={false} />
+        <XAxis dataKey={x} tick={AXIS} tickLine={false} axisLine={{ stroke: GRID }} reversed={rtl} minTickGap={16} />
+        <YAxis tick={AXIS} tickLine={false} axisLine={false} tickFormatter={fmtCompact} width={48} orientation={rtl ? "right" : "left"} />
+        <Tooltip content={<TooltipBox money={money} />} cursor={{ stroke: "#9aa19a", strokeDasharray: 3 }} />
+        <Legend iconType="plainline" iconSize={14} wrapperStyle={{ fontSize: 12 }} />
+        {series.map((s, i) => (
+          <Line key={s.key} type="monotone" dataKey={s.key} name={s.name} stroke={SERIES[i % SERIES.length]} strokeWidth={2}
+            dot={data.length < 40 ? { r: 2.5 } : false} activeDot={{ r: 4 }} connectNulls />
+        ))}
+      </LineChart>
     </ResponsiveContainer></div>
   );
 }

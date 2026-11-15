@@ -37,7 +37,7 @@ export default function ProductDetail() {
           {p?.code && <span className="font-mono text-base text-muted">#{p.code}</span>}
         </span>}
         subtitle={p ? [p.category, p.subcategory, p.brand, p.manufacturer, p.material_group, p.unit, p.list_price != null ? `${t("col.list_price")}: ${fmtMoney(p.list_price)}` : null].filter(Boolean).join(" · ") || undefined : undefined}
-        actions={<ExportButton path="/products/detail" params={{ ...params, key }} />} />
+        actions={<><Link to={`/products/inspect?k=${encodeURIComponent(key)}`} className="btn-ghost">{t("insp.compare")}</Link><ExportButton path="/products/detail" params={{ ...params, key }} /></>} />
       <FilterBar />
       {q.isLoading ? <Spinner /> : q.error ? <ErrorBox error={q.error} /> : !d ? <Empty /> : (
         <div className="space-y-5">

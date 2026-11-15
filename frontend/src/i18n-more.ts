@@ -2,6 +2,15 @@ import i18n from "./i18n";
 
 /** Texts for products (code + name, product page), shifts, and the merged customers page. */
 const en = {
+  insp: {
+    title: "Product inspector", subtitle: "Choose one or more products and see their sales side by side - pick the sales type, dates and branches with the filters above",
+    pick: "Products to inspect", pickHelp: "Type a code, name or brand and click to add. Add as many as you like (up to 20).", search: "Search product code, name or brand…",
+    clear: "Remove all", empty: "Add at least one product above. Tip: on the Products page you can tick several products and open them here together.",
+    typeOn: "Only these sales types: {{types}} (change with 'Sales type' in the filters)", show: "Show", every: "Per", day: "Day", week: "Week", month: "Month",
+    summary: "Summary", first: "First sold", noSales: "No sales in these filters for: {{items}}", over: { units: "Units sold over time", sales: "Sales over time" },
+    byType: "By sales type", byShift: "By shift", byBranch: "By branch", buyers: "Who bought them", which: "Products bought",
+    openN: "Inspect {{n}} selected", tick: "Select to inspect together", compare: "Compare with other products",
+  },
   cls: {
     button: "Download classified", title: "Customers classified - Excel",
     help: "One summary sheet (customers, sales and share per class) + one sheet per class with its customers, best first. Uses the filters above.",
@@ -74,6 +83,15 @@ const en = {
 };
 
 const ar = {
+  insp: {
+    title: "فحص الأصناف", subtitle: "اختار صنف أو أكتر وشوف مبيعاتهم جنب بعض - حدد نوع البيع والتواريخ والفروع من الفلاتر اللي فوق",
+    pick: "الأصناف المطلوب فحصها", pickHelp: "اكتب كود أو اسم أو ماركة واضغط للإضافة. ضيف أي عدد (لحد 20).", search: "ابحث بكود الصنف أو اسمه أو الماركة…",
+    clear: "مسح الكل", empty: "ضيف صنف واحد على الأقل فوق. ممكن كمان من صفحة الأصناف تعلّم على أكتر من صنف وتفتحهم هنا مع بعض.",
+    typeOn: "أنواع البيع دي بس: {{types}} (غيّرها من 'نوع البيع' في الفلاتر)", show: "اعرض", every: "لكل", day: "يوم", week: "أسبوع", month: "شهر",
+    summary: "الملخص", first: "أول بيع", noSales: "مفيش مبيعات في الفلاتر دي لـ: {{items}}", over: { units: "الوحدات المباعة على مدار الوقت", sales: "المبيعات على مدار الوقت" },
+    byType: "حسب نوع البيع", byShift: "حسب الوردية", byBranch: "حسب الفرع", buyers: "مين اشتراهم", which: "الأصناف اللي اشتراها",
+    openN: "افحص {{n}} صنف متعلّم", tick: "علّم عشان تفحصهم مع بعض", compare: "قارن بأصناف تانية",
+  },
   cls: {
     button: "تحميل العملاء مصنفين", title: "العملاء مصنفين - إكسيل",
     help: "شيت ملخص (عدد العملاء والمبيعات والنسبة لكل تصنيف) + شيت لكل تصنيف فيه عملاؤه من الأعلى للأقل. بيستخدم الفلاتر اللي فوق.",

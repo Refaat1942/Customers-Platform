@@ -16,6 +16,7 @@ const Products = lazy(() => import("./pages/Products"));
 const ProductDetail = lazy(() => import("./pages/ProductDetail"));
 const Shifts = lazy(() => import("./pages/Shifts"));
 const CustomerCard = lazy(() => import("./pages/CustomerCard"));
+const ProductInspector = lazy(() => import("./pages/ProductInspector"));
 const Live = lazy(() => import("./pages/Live"));
 const DataCheck = lazy(() => import("./pages/DataCheck"));
 const Refills = lazy(() => import("./pages/Refills"));
@@ -68,6 +69,7 @@ export default function App() {
             <Route path="customer-base" element={<Navigate to="/customers?tab=base" replace />} />
             <Route path="products" element={<Guard perm="products"><Products /></Guard>} />
             <Route path="products/item" element={<Guard perm="products"><ProductDetail /></Guard>} />
+            <Route path="products/inspect" element={<Guard perm="products"><ProductInspector /></Guard>} />
             <Route path="shifts" element={<Guard perm="shifts"><Shifts /></Guard>} />
             <Route path="area" element={<Guard perm="area"><Area /></Guard>} />
             <Route path="transactions" element={<Guard perm="transactions"><Transactions /></Guard>} />

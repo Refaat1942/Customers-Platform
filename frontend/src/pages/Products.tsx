@@ -10,6 +10,7 @@ import FilterBar from "../components/FilterBar";
 import DataTable from "../components/DataTable";
 import { Link } from "react-router-dom";
 import { Card, ErrorBox, ExportButton, Notice, PageHeader } from "../components/ui";
+import { ScanSearch } from "lucide-react";
 import { useAuth } from "../lib/auth";
 import { RankBars } from "../components/charts";
 
@@ -34,13 +35,20 @@ export default function Products() {
     if (res.data?.groups) setGroups(res.data.groups);
   }, [res.data]);
   const { can } = useAuth();
+  const [picked, setPicked] = useState<string[]>([]);
+  const toggle = (k: string) => setPicked((p) => (p.includes(k) ? p.filter((x) => x !== k) : [...p, k]));
   const [names, setNames] = useState<any>(null);
   useEffect(() => { if (res.data?.names) setNames(res.data.names); }, [res.data]);
   const c = (k: string, extra = {}) => ({ key: k, label: t(`col.${k}`), sortable: true, ...extra });
   return (
     <>
       <PageHeader title={t("prod.title")} subtitle={t("prod.subtitle")}
-        actions={<ExportButton path="/products" params={{ ...params, q, sort, desc }} />} />
+        actions={<>
+          <button className="btn-primary" onClick={() => nav(`/products/inspect${picked.length ? "?" + picked.map((k) => "k=" + encodeURIComponent(k)).join("&") : ""}`)}>
+            <ScanSearch size={16} /> {picked.length ? t("insp.openN", { n: picked.length }) : t("insp.title")}
+          </button>
+          <ExportButton path="/products" params={{ ...params, q, sort, desc }} />
+        </>} />
       <FilterBar />
       <div className="space-y-5">
         {names?.codes_without_name > 0 && (
@@ -70,6 +78,10 @@ export default function Products() {
               sort={sort} desc={desc} onSort={(k, d) => { setSort(k); setDesc(d); }} loading={res.isFetching} maxHeight={640}
               onRowClick={(r) => nav(`/products/item?key=${encodeURIComponent(r.key)}`)}
               columns={[
+                { key: "x", label: "", render: (r: any) => (
+                  <input type="checkbox" className="accent-brand size-4 cursor-pointer" title={t("insp.tick")} checked={picked.includes(r.key)}
+                    onClick={(e) => e.stopPropagation()} onChange={() => toggle(r.key)} />
+                ) },
                 c("code", { className: "font-mono text-xs whitespace-nowrap", render: (r: any) => r.code ?? "–" }),
                 c("item", { className: "max-w-80 truncate font-medium", render: (r: any) => r.item ?? <span className="text-muted italic font-normal">{t("prod.noName")}</span> }),
                 c("category", { render: (r: any) => r.category ?? r.material_group ?? "–" }),

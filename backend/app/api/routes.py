@@ -704,6 +704,49 @@ def get_products(f: an.Filters = Depends(filters), q: str | None = None, sort: s
                                          page_size=page_size, group=group))
 
 
+@router.get("/products/search")
+def search_products(q: str = Query(min_length=1, max_length=100), user: dict = Depends(require("products"))):
+    return an.product_search(q)
+
+
+@router.get("/products/inspect")
+def inspect_products(keys: list[str] = Query(default=[]), f: an.Filters = Depends(filters),
+                     interval: Literal["day", "week", "month"] = "month", export: bool = False,
+                     lang: Literal["en", "ar"] = "en", user: dict = Depends(require("products"))):
+    """Selected products side by side, within the filters (dates, branch, sales type...)."""
+    settings = db.get_settings()
+    res = db.cached(("inspect", tuple(keys), f.key(), interval, settings.get("shift_morning"),
+                     settings.get("shift_evening")), lambda: an.product_inspect(keys, f, settings, interval))
+    res = {**res, "buyers": protect([dict(r) for r in res["buyers"]], user)}
+    if not export:
+        return res
+    need_export(user)
+    ar = lang == "ar"
+    label = {r["key"]: f"{r['code'] or ''} {r['item'] or ''}".strip() for r in res["products"]}
+    tl = pd.DataFrame(res["timeline"])
+    sheets = [("الأصناف" if ar else "Products", ex.frame(res["products"], ["code", "item", "sales", "share", "units",
+                                                                          "invoices", "customers", "branches",
+                                                                          "avg_price", "first_sold", "last_sold"], lang))]
+    for name, rows, dim in (("Timeline", res["timeline"], "period"), ("Branches", res["by_branch"], "branch"),
+                            ("Sales types", res["by_type"], "sales_type"), ("Shifts", res["by_shift"], "shift")):
+        df = pd.DataFrame(rows)
+        if df.empty:
+            continue
+        if dim == "shift":
+            df["shift"] = df["shift"].map(lambda v: ex.VALUES[v][1 if ar else 0] if v in ex.VALUES else v)
+        piv = df.assign(key=df["key"].map(label)).pivot_table(index=dim, columns="key", values="units",
+                                                                aggfunc="sum", fill_value=0).reset_index()
+        piv.columns = [ex.label(dim, lang) if c == dim else f"{c} ({'وحدات' if ar else 'units'})" for c in piv.columns]
+        sheets.append(({"Timeline": "بالفترة", "Branches": "الفروع", "Sales types": "أنواع البيع",
+                        "Shifts": "الورديات"}[name] if ar else name, piv))
+    sheets.append(("المشترين" if ar else "Buyers", ex.frame(res["buyers"], ["phone", "name", "branch", "purchases",
+                                                                         "units", "sales", "last_bought", "products"], lang)))
+    del tl
+    audit(user, "export", f"product inspector {len(keys)} products {filter_text(f)}")
+    return xlsx_response(ex.workbook(sheets, lang, "Product inspector" if not ar else "مقارنة الأصناف",
+                                     filter_meta(f, lang)), "products_inspect.xlsx")
+
+
 @router.get("/products/detail")
 def get_product_detail(key: str, f: an.Filters = Depends(filters), export: bool = False,
                        lang: str = "en", user: dict = Depends(require("products"))):
