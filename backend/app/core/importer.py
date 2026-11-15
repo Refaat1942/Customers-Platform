@@ -337,6 +337,7 @@ def infer_fields(df: pd.DataFrame, m: dict, prof: dict) -> dict:
             "same_prev": float(same_prev), "const_phone": const_per_phone,
             "len_std": float(txt.str.len().std() or 0) if n > 1 else 0.0,
             "const_inv": None,
+            "multi_day": None,
             "decimal": float((num.dropna() % 1 != 0).mean()) if num.notna().any() else 0,
         }
 
@@ -355,6 +356,17 @@ def infer_fields(df: pd.DataFrame, m: dict, prof: dict) -> dict:
         except Exception:  # noqa: BLE001
             pass
 
+    # an invoice number belongs to one day only
+    dcol = m.get("invoice_date")
+    if dcol in df.columns:
+        days = df[dcol].astype(str).str[:10]
+        for c in stats:
+            try:
+                g = pd.DataFrame({"k": df[c].astype(str), "d": days})[df[c].notna()].groupby("k")["d"].nunique()
+                stats[c]["multi_day"] = float((g > 1).mean()) if len(g) else None
+            except Exception:  # noqa: BLE001
+                pass
+
     def take(field, cands):
         cands = [c for c in cands if c not in used]
         if not m.get(field) and cands:
@@ -372,7 +384,8 @@ def infer_fields(df: pd.DataFrame, m: dict, prof: dict) -> dict:
     # invoice number: same value on consecutive lines (one invoice = several lines), not a phone
     take("invoice_no", [c for c in by("same_prev") if st[c]["same_prev"] >= 0.2 and st[c]["uniq"] < 0.9
                         and st[c]["digit"] >= 0.8 and st[c]["len"] <= 20 and st[c]["distinct"] > 1
-                        and prof[c]["phone"] < 0.3 and st[c]["num"] >= 0.5])
+                        and prof[c]["phone"] < 0.3 and st[c]["num"] >= 0.5
+                        and (st[c]["multi_day"] or 0) <= 0.1])
     # sales type: known words (cash, delivery, cards, digital...) or a few words that stay the
     # same for the whole invoice
     take("invoice_type", [c for c in by("type") if st[c]["distinct"] <= 15 and (
@@ -764,7 +777,10 @@ def build_frame(raw: pd.DataFrame, mapping: dict) -> tuple[pd.DataFrame, dict]:
     fallback_key = (out["phone"].fillna("?") + "|" + out["day"].dt.strftime("%Y-%m-%d")
                     + "|" + out["branch"].fillna("").astype(str))
     # transaction numbers are unique per branch POS: 1001 in Maadi != 1001 in Nasr City
-    branch_inv = out["branch"].fillna("").astype(str) + "|" + out["invoice_no"].fillna("").astype(str)
+    # ... and one invoice is always one day: a "number" repeated on many days (e.g. a customer or
+    # account number read as invoice number) must not merge months of purchases into one visit
+    branch_inv = (out["branch"].fillna("").astype(str) + "|" + out["invoice_no"].fillna("").astype(str)
+                  + "|" + out["day"].dt.strftime("%Y-%m-%d"))
     out["visit_key"] = branch_inv.where(out["invoice_no"].notna(), fallback_key)
     return out, stats
 

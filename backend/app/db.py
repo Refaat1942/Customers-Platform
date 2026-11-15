@@ -272,6 +272,14 @@ def _build_indexes():
             if n:
                 _log(f"invoice keys made branch-specific on {n} lines")
                 bump_version()
+            # one invoice = one day: file lines whose "invoice number" repeats on several days
+            # (a wrongly read column) were merged into one long visit - split them by day
+            n = conn.execute("""UPDATE sales SET visit_key = visit_key || '|' || to_char(day, 'YYYY-MM-DD')
+                WHERE source IS NULL AND invoice_no IS NOT NULL
+                  AND visit_key = coalesce(branch, '') || '|' || invoice_no""").rowcount
+            if n:
+                _log(f"invoice keys made day-specific on {n} lines")
+                bump_version()
             # sales types (Cash, Cards, Digital, Insurance...) that older imports stored as category
             from .core.importer import TYPE_WORDS, refresh_catalogue
             like = " OR ".join("lower(item_category) LIKE %s" for _ in TYPE_WORDS)

@@ -771,3 +771,22 @@ def test_customer_360_card(client):
     assert c["rhythm"] and c["rhythm"]["shortest"] <= c["rhythm"]["median"] <= c["rhythm"]["longest"]
     assert c["gaps"] and c["yearly"] and c["weekday"] and c["types"]
     assert client.get("/api/customers/nope/card").status_code == 404
+
+
+def test_invoice_number_repeated_on_many_days_is_not_one_visit(client):
+    """A column like an account number, read as the invoice number, must not merge months
+    of purchases into one visit."""
+    import pandas as pd
+    df = pd.DataFrame({"Date": ["2026-06-29", "2026-07-15", "2026-07-15", "2026-08-20"],
+                       "Mobile": ["01055500077"] * 4, "Branch": ["CA25"] * 4,
+                       "Invoice No": ["361295"] * 4, "Item": ["A", "B", "C", "D"],
+                       "Amount": [10.0, 20.0, 30.0, 40.0]})
+    buf = io.BytesIO()
+    df.to_excel(buf, index=False)
+    up = upload(client, buf.getvalue(), "acct.xlsx")
+    st = _commit_and_wait(client, up, "sales", "merge", up["mappings"]["sales"])
+    assert st["status"] == "done", st
+    c = client.get("/api/customers", params={"q": "01055500077"}).json()["rows"][0]
+    assert c["visits"] == 3
+    prof = client.get(f"/api/customers/{c['cid']}").json()
+    assert len(prof["visits"]) == 3
