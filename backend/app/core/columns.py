@@ -58,6 +58,8 @@ KEYWORDS = {
         "receipt number", "bill no", "bill number", "transaction id", "document no",
         "doc no", "doc number", "docno", "document number", "trans no", "transaction no",
         "transaction number", "order no", "order number", "voucher no", "receipt",
+        "billing document", "billing doc", "billing doc no", "billing document number", "bill doc",
+        "vbeln", "sales document",
         "رقم الفاتورة", "رقم الإيصال", "رقم المستند",
     ],
     "invoice_date": [

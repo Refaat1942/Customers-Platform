@@ -736,6 +736,14 @@ def _text(v):
     return s or None
 
 
+def sap_code(v):
+    """SAP pads material numbers with zeros (000000000000100201): keep the number as people
+    know it (100201), so codes from SAP reports, Excel files and product lists all match."""
+    if isinstance(v, str) and len(v) > 1 and v[0] == "0" and v.isdigit():
+        return v.lstrip("0") or "0"
+    return v
+
+
 def _clean_text(s: pd.Series) -> pd.Series:
     return s.astype(object).map(_text)
 
@@ -765,6 +773,8 @@ def build_frame(raw: pd.DataFrame, mapping: dict) -> tuple[pd.DataFrame, dict]:
     for f in TEXT_FIELDS:
         s = src(f)
         out[f] = _clean_text(s) if s is not None else None
+    if out.get("item_code") is not None:
+        out["item_code"] = out["item_code"].map(sap_code)
 
     if mapping.get("district") is None:
         if mapping.get("address"):
@@ -1104,6 +1114,7 @@ def run_product_import(import_id: int, path: Path, mapping: dict, mode: str,
             have = lambda f: mapping.get(f) and mapping[f] in chunk.columns  # noqa: E731
             cols = {f: [text(v) for v in _clean_text(chunk[mapping[f]])] if have(f) else [None] * len(chunk)
                     for f in PRODUCT_TEXT}
+            cols["item_code"] = [sap_code(v) for v in cols["item_code"]]
             cols["list_price"] = [None if pd.isna(v) else float(v) for v in
                                   _parse_numbers(chunk[mapping["list_price"]])] if have("list_price") \
                 else [None] * len(chunk)

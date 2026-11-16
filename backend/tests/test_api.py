@@ -975,3 +975,24 @@ def test_sap_pull_feed_and_inbox(client):
     feeds.scan_inbox()
     assert not p.exists() and list((feeds.INBOX / "done").glob("*ZSD_DAILY*"))
     assert client.get("/api/customers", params={"q": "01066600033"}).json()["rows"]
+
+
+def test_sap_class_csv_output(client):
+    """CSV as produced by the SE24 class: semicolons, SAP column titles, zero-padded material
+    numbers, quoted names: billing document is the invoice, codes match the product list."""
+    csv_text = ('Plant;Billing Document;Billing Date;Time;Telephone;Name;Material;Material Description;'
+                'Billed Quantity;Sales Unit;Net Value;Sales Type\r\n'
+                'CA28;0090001234;2026-11-15;10:15:00;01077788899;"احمد; البهنساوي";000000000000100202;'
+                '"VITAMIN ""C"" 1000 MG";2.000;PAC;90.00;Delivery\r\n'
+                'CA28;0090001234;2026-11-15;10:15:00;01077788899;"احمد; البهنساوي";000000000000100201;'
+                'PANADOL;1.000;PAC;45.00;Delivery\r\n')
+    key = client.post("/api/integration/keys", json={"name": "SAP class", "branch": None}).json()["key"]
+    r = client.post("/api/v1/files", params={"filename": "ZSD_CUSTOMER_SALES_20261115.csv"},
+                    content=csv_text.encode("utf-8"), headers={"X-API-Key": key, "Content-Type": "text/csv"})
+    rows = _wait_imports(client, [x["import_id"] for x in r.json()["imports"]])
+    assert rows[0]["status"] == "done" and rows[0]["rows_imported"] == 2, rows
+    c = client.get("/api/customers", params={"q": "01077788899"}).json()["rows"][0]
+    prof = client.get(f"/api/customers/{c['cid']}").json()
+    assert len(prof["visits"]) == 1 and prof["visits"][0]["invoice_no"] == "0090001234"
+    codes = {x["code"] for x in prof["items"]}
+    assert codes == {"100201", "100202"}
