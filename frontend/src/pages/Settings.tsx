@@ -7,6 +7,7 @@ import { useBranding } from "../lib/branding";
 import { Logo } from "../components/Layout";
 import { Badge, Card, Notice, PageHeader, Spinner } from "../components/ui";
 import DataTable from "../components/DataTable";
+import DataFeedsCard from "../components/DataFeedsCard";
 import { fmtDate, fmtInt, fmtMoney } from "../lib/format";
 
 type S = { active_days: number; attention_days: number; high_value_spend: number; loyalty_spend: number; loyalty_visits: number; shift_morning: string; shift_evening: string; openai_model: string; openai_key_set: boolean; openai_key_hint: string };
@@ -83,6 +84,7 @@ export default function Settings() {
         <BrandingCard />
         <SecurityCard />
         <PosCard />
+        <DataFeedsCard />
       </div>
     </>
   );

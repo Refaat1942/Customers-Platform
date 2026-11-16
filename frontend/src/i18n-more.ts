@@ -2,6 +2,21 @@ import i18n from "./i18n";
 
 /** Texts for products (code + name, product page), shifts, and the merged customers page. */
 const en = {
+  feeds: {
+    title: "SAP S/4HANA & automatic data", help: "Let SAP (or any system) deliver its daily report by itself. Every file is read like a manual upload: sheets and columns are recognised, and lines already in the system are skipped - sending the same or an overlapping report again never duplicates data. Results appear in Data upload history.",
+    pushTitle: "SAP sends the file", pushHelp: "A background job in SAP (or SAP Integration Suite / CPI) sends the report file every day to this address. Best option: no access into your SAP network is needed.",
+    address: "Address", example: "Example (curl)", pushKey: "Use an API key from 'POS integration' above (create one named 'SAP'). Full guide for the SAP team: docs/SAP_INTEGRATION.md",
+    pullTitle: "The platform downloads from SAP", pullHelp: "At set times every day, the platform downloads the report from a link: an SAP OData service (Gateway / CDS view) or a file link, with SAP user and password or a token.",
+    add: "Add a download", tz: "Times are in", inboxTitle: "Drop folder", inboxHelp: "Any Excel / CSV / zip copied into this folder on the server (e.g. by SAP over SFTP, or a script) is imported within a minute.",
+    inboxAfter: "Imported files move to inbox/done (or inbox/failed) and are kept 30 days.",
+    list: "Scheduled downloads", name: "Name", url: "Report link (URL)", times: "Times every day", on: "On", off: "Off", lastRun: "Last run", result: "Result",
+    runNow: "Run now", recent: "Recent automatic imports", when: "When", source: "Source", file: "File", added: "Added", skipped: "Skipped",
+    deleteConfirm: "Delete this scheduled download?", editTitle: "Edit download", timesHelp: "One or more times, e.g. 06:30, 14:00",
+    urlHelp: "{yesterday} and {today} are replaced by the dates (YYYY-MM-DD). OData JSON pages are followed automatically.",
+    auth: "Login", authTypes: { basic: "SAP user + password (Basic)", bearer: "Token (Bearer)", header: "API key in a header", none: "No login" },
+    user: "User", password: "Password", token: "Token / key", headerName: "Header name", keep: "(saved - leave empty to keep)", enabled: "Run every day at these times",
+    insecure: "Accept the server's own certificate (internal SAP)",
+  },
   insp: {
     title: "Product inspector", subtitle: "Choose one or more products and see their sales side by side - pick the sales type, dates and branches with the filters above",
     pick: "Products to inspect", pickHelp: "Type a code, name or brand and click to add. Or press 'Choose products' to tick many at once, with 'Select all'.", search: "Search product code, name or brand…",
@@ -85,6 +100,21 @@ const en = {
 };
 
 const ar = {
+  feeds: {
+    title: "SAP S/4HANA والبيانات التلقائية", help: "خلي SAP (أو أي نظام) يبعت تقريره اليومي لوحده. كل ملف بيتقري زي الرفع اليدوي: الشيتات والأعمدة بتتعرف تلقائياً، والسطور اللي موجودة بالفعل بتتخطى - بعت نفس التقرير أو تقرير متداخل تاني عمره ما يكرر البيانات. النتائج بتظهر في سجل رفع البيانات.",
+    pushTitle: "SAP يبعت الملف", pushHelp: "Job في SAP (أو SAP Integration Suite / CPI) بيبعت ملف التقرير كل يوم للعنوان ده. أفضل اختيار: مش محتاج دخول لشبكة SAP عندكم.",
+    address: "العنوان", example: "مثال (curl)", pushKey: "استخدم مفتاح API من 'ربط الكاشير' فوق (اعمل واحد باسم SAP). الشرح الكامل لفريق SAP: docs/SAP_INTEGRATION.md",
+    pullTitle: "المنصة تسحب من SAP", pullHelp: "في مواعيد محددة كل يوم، المنصة بتنزّل التقرير من لينك: خدمة OData من SAP (Gateway / CDS view) أو لينك ملف، بيوزر وباسورد SAP أو توكن.",
+    add: "إضافة سحب تلقائي", tz: "المواعيد بتوقيت", inboxTitle: "فولدر الاستلام", inboxHelp: "أي إكسيل / CSV / zip يتنسخ في الفولدر ده على السيرفر (مثلاً من SAP بـ SFTP أو سكريبت) بيترفع خلال دقيقة.",
+    inboxAfter: "الملفات بعد الرفع بتتنقل لـ inbox/done (أو inbox/failed) وبتفضل 30 يوم.",
+    list: "السحب المجدول", name: "الاسم", url: "لينك التقرير (URL)", times: "المواعيد كل يوم", on: "شغال", off: "متوقف", lastRun: "آخر تشغيل", result: "النتيجة",
+    runNow: "شغّل دلوقتي", recent: "آخر عمليات الرفع التلقائي", when: "الوقت", source: "المصدر", file: "الملف", added: "اتضاف", skipped: "اتخطى",
+    deleteConfirm: "تمسح السحب المجدول ده؟", editTitle: "تعديل السحب", timesHelp: "ميعاد أو أكتر، مثلاً 06:30, 14:00",
+    urlHelp: "{yesterday} و {today} بيتبدلوا بالتواريخ (YYYY-MM-DD). صفحات OData بتتجاب كلها تلقائياً.",
+    auth: "الدخول", authTypes: { basic: "يوزر + باسورد SAP (Basic)", bearer: "توكن (Bearer)", header: "مفتاح API في هيدر", none: "من غير دخول" },
+    user: "اليوزر", password: "الباسورد", token: "التوكن / المفتاح", headerName: "اسم الهيدر", keep: "(محفوظ - سيبه فاضي عشان يفضل)", enabled: "يشتغل كل يوم في المواعيد دي",
+    insecure: "قبول شهادة السيرفر الداخلية (SAP داخلي)",
+  },
   insp: {
     title: "فحص الأصناف", subtitle: "اختار صنف أو أكتر وشوف مبيعاتهم جنب بعض - حدد نوع البيع والتواريخ والفروع من الفلاتر اللي فوق",
     pick: "الأصناف المطلوب فحصها", pickHelp: "اكتب كود أو اسم أو ماركة واضغط للإضافة. أو اضغط 'اختيار الأصناف' وعلّم على كتير مرة واحدة، مع 'اختيار الكل'.", search: "ابحث بكود الصنف أو اسمه أو الماركة…",

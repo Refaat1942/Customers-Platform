@@ -1451,6 +1451,89 @@ def pos_activity(user: dict = Depends(require("settings"))):
     }
 
 
+# ====================================================================== data feeds (SAP pull)
+class FeedIn(BaseModel):
+    name: str = Field(min_length=2, max_length=80)
+    url: str = Field(min_length=8, max_length=2000, pattern=r"^https?://")
+    auth_type: Literal["none", "basic", "bearer", "header"] = "none"
+    username: str | None = Field(default=None, max_length=200)
+    secret: str | None = Field(default=None, max_length=4000)   # None = keep the saved one
+    header_name: str | None = Field(default=None, max_length=100)
+    insecure: bool = False
+    times: str = Field(default="06:30", pattern=r"^\s*([01]?\d|2[0-3]):[0-5]\d(\s*,\s*([01]?\d|2[0-3]):[0-5]\d)*\s*$")
+    enabled: bool = True
+
+
+FEED_COLS = ("id, name, url, auth_type, username, header_name, insecure, times, enabled, last_run_at, "
+             "last_status, last_message, created_by, created_at, (secret IS NOT NULL AND secret <> '') AS secret_set")
+
+
+@router.get("/integration/feeds")
+def list_feeds(user: dict = Depends(require("settings"))):
+    from ..core import feeds
+    cur = db.cursor()
+    return {"feeds": db.rows(cur, f"SELECT {FEED_COLS} FROM data_feeds ORDER BY id"),
+            "inbox": str(feeds.INBOX), "timezone": db.get_settings().get("timezone"),
+            "recent": db.rows(cur, """SELECT id, filename, kind, status, message, rows_imported, rows_skipped,
+                created_by, created_at, finished_at FROM imports
+                WHERE created_by LIKE 'api:%' OR created_by LIKE 'feed:%' OR created_by = 'inbox'
+                ORDER BY id DESC LIMIT 30""")}
+
+
+@router.post("/integration/feeds")
+def create_feed(body: FeedIn, user: dict = Depends(require("settings"))):
+    fid = db.cursor().execute(
+        "INSERT INTO data_feeds (name, url, auth_type, username, secret, header_name, insecure, times, enabled, "
+        "created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
+        [body.name.strip(), body.url.strip(), body.auth_type, body.username, body.secret, body.header_name,
+         body.insecure, body.times.strip(), body.enabled, user["username"]]).fetchone()[0]
+    audit(user, "feed_create", f"{body.name} {body.url[:120]}")
+    return {"id": fid}
+
+
+@router.put("/integration/feeds/{fid}")
+def update_feed(fid: int, body: FeedIn, user: dict = Depends(require("settings"))):
+    cur = db.cursor()
+    cur.execute("UPDATE data_feeds SET name=?, url=?, auth_type=?, username=?, header_name=?, insecure=?, "
+                "times=?, enabled=? WHERE id=?",
+                [body.name.strip(), body.url.strip(), body.auth_type, body.username, body.header_name,
+                 body.insecure, body.times.strip(), body.enabled, fid])
+    if body.secret is not None:
+        cur.execute("UPDATE data_feeds SET secret = ? WHERE id = ?", [body.secret or None, fid])
+    audit(user, "feed_update", f"#{fid} {body.name}")
+    return {"ok": True}
+
+
+@router.delete("/integration/feeds/{fid}")
+def delete_feed(fid: int, user: dict = Depends(require("settings"))):
+    db.cursor().execute("DELETE FROM data_feeds WHERE id = ?", [fid])
+    audit(user, "feed_delete", f"#{fid}")
+    return {"ok": True}
+
+
+@router.post("/integration/feeds/{fid}/run")
+def run_feed_now(fid: int, user: dict = Depends(require("settings"))):
+    """Download and import now (also the way to test a new feed)."""
+    from ..core import feeds
+    audit(user, "feed_run", f"#{fid}")
+    return feeds.run_feed(fid, by=user["username"])
+
+
+class TimezoneIn(BaseModel):
+    timezone: str = Field(min_length=2, max_length=60)
+
+
+@router.put("/integration/timezone")
+def set_timezone(body: TimezoneIn, user: dict = Depends(require("settings"))):
+    from zoneinfo import ZoneInfo
+    try:
+        ZoneInfo(body.timezone)
+    except Exception:  # noqa: BLE001
+        raise HTTPException(400, "Unknown time zone (example: Africa/Cairo)")
+    db.save_settings({"timezone": body.timezone})
+    return {"ok": True}
+
+
 # ====================================================================== live POS
 @router.get("/live")
 def get_live(branch: str | None = None, user: dict = Depends(require("live"))):

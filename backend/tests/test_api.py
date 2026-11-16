@@ -869,3 +869,109 @@ def test_all_product_file_columns_and_select_all(client):
     assert len(r["products"]) > 10 and r["series"][0] == "_all" and len(r["series"]) == 11
     assert any(x["key"] == "_all" for x in r["timeline"])
     assert client.post("/api/products/inspect", json={"keys": [x["key"] for x in every], "export": True}).content[:2] == b"PK"
+
+
+def _wait_imports(client, ids):
+    for _ in range(300):
+        rows = [client.get(f"/api/imports/{i}").json() for i in ids]
+        if all(r["status"] != "running" for r in rows):
+            return rows
+        time.sleep(0.1)
+    raise AssertionError("imports did not finish")
+
+
+def _sap_sales(day="2026-10-05", phone="01066600011", inv="9000001") -> bytes:
+    import pandas as pd
+    df = pd.DataFrame({"Site Code": ["CA28", "CA28"], "Billing Document": [inv, inv],
+                       "Cutomer Phone": [phone, phone], "Receipt Date": [day, day],
+                       "Receipt Time": ["10:15:00", "10:15:00"], "Material": [100201, 100202],
+                       "Material Name": ["PANADOL EXTRA 24 TAB", "VITAMIN C 1000 MG"], "qty": [1, 2], "RSP": [45.0, 90.0]})
+    buf = io.BytesIO()
+    df.to_excel(buf, index=False)
+    return buf.getvalue()
+
+
+def test_sap_push_file_api(client):
+    key = client.post("/api/integration/keys", json={"name": "SAP S4", "branch": None}).json()["key"]
+    h = {"X-API-Key": key, "Content-Type": "application/octet-stream"}
+    data = _sap_sales()
+    r = client.post("/api/v1/files", params={"filename": "ZSD_DAILY_SALES 2026-10-05.xlsx"}, content=data, headers=h)
+    assert r.status_code == 202, r.text
+    ids = [x["import_id"] for x in r.json()["imports"]]
+    rows = _wait_imports(client, ids)
+    assert rows[0]["status"] == "done" and rows[0]["rows_imported"] == 2, rows
+    st = client.get(f"/api/v1/files/{ids[0]}", headers={"X-API-Key": key}).json()
+    assert st["status"] == "done"
+    # same file again: recognised, nothing added
+    again = client.post("/api/v1/files", params={"filename": "again.xlsx"}, content=data, headers=h).json()
+    assert again["imports"][0]["status"] == "skipped"
+    # multipart, overlapping report (one new invoice): only the new lines are added
+    r = client.post("/api/v1/files", files={"file": ("day2.xlsx", _sap_sales("2026-10-06", inv="9000002"))},
+                    headers={"X-API-Key": key})
+    rows = _wait_imports(client, [x["import_id"] for x in r.json()["imports"]])
+    assert rows[0]["rows_imported"] == 2
+    assert client.post("/api/v1/files", content=data, params={"filename": "x.pdf"}, headers=h).status_code == 400
+    assert client.post("/api/v1/files", content=data, headers={"X-API-Key": "bad"}).status_code == 401
+
+
+def test_sap_pull_feed_and_inbox(client):
+    import http.server
+    import json as _json
+    import threading as th
+    from app.core import feeds
+    odata = {"d": {"results": [
+        {"__metadata": {}, "Plant": "GZ03", "BillingDocument": "77001", "Phone": "01066600022",
+         "BillingDate": "/Date(1791158400000)/", "Material": "100203", "MaterialName": "BABY SHAMPOO 200ML",
+         "Quantity": "1", "NetAmount": "55.50"},
+        {"__metadata": {}, "Plant": "GZ03", "BillingDocument": "77001", "Phone": "01066600022",
+         "BillingDate": "/Date(1791158400000)/", "Material": "100204", "MaterialName": "SUNSCREEN SPF50",
+         "Quantity": "2", "NetAmount": "300.00"}]}}
+    seen = {}
+
+    class H(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802
+            seen["auth"] = self.headers.get("Authorization")
+            body = _json.dumps(odata).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *a):
+            pass
+
+    srv = http.server.HTTPServer(("127.0.0.1", 0), H)
+    th.Thread(target=srv.serve_forever, daemon=True).start()
+    url = f"http://127.0.0.1:{srv.server_port}/sap/opu/odata/sap/ZSALES_SRV/Sales?$format=json&date={{yesterday}}"
+    fid = client.post("/api/integration/feeds", json={"name": "SAP daily", "url": url, "auth_type": "basic",
+                                                      "username": "RFC_USER", "secret": "pw", "times": "06:30"}).json()["id"]
+    feeds_list = client.get("/api/integration/feeds").json()
+    f = [x for x in feeds_list["feeds"] if x["id"] == fid][0]
+    assert f["secret_set"] and "secret" not in f
+    res = client.post(f"/api/integration/feeds/{fid}/run").json()
+    srv.shutdown()
+    assert res["ok"], res
+    assert seen["auth"].startswith("Basic ")
+    c = client.get("/api/customers", params={"q": "01066600022"}).json()["rows"]
+    assert c and c[0]["visits"] == 1 and c[0]["branch"] == "GZ03"
+    # schedule: due once after its time, not again the same day
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    from app import db
+    db.cursor().execute("UPDATE data_feeds SET last_run_at = NULL WHERE id = ?", [fid])
+    now = datetime(2026, 11, 16, 6, 45, tzinfo=ZoneInfo("Africa/Cairo"))
+    assert fid in feeds.due_feeds(now)
+    db.cursor().execute("UPDATE data_feeds SET last_run_at = ? WHERE id = ?", [datetime(2026, 11, 16, 4, 40), fid])
+    assert fid not in feeds.due_feeds(now)
+    assert fid not in feeds.due_feeds(datetime(2026, 11, 16, 5, 0, tzinfo=ZoneInfo("Africa/Cairo")))
+    client.delete(f"/api/integration/feeds/{fid}")
+
+    # inbox folder
+    feeds.INBOX.mkdir(parents=True, exist_ok=True)
+    p = feeds.INBOX / "ZSD_DAILY 2026-10-07.xlsx"
+    p.write_bytes(_sap_sales("2026-10-07", phone="01066600033", inv="9000003"))
+    import os
+    os.utime(p, (time.time() - 60, time.time() - 60))
+    feeds.scan_inbox()
+    assert not p.exists() and list((feeds.INBOX / "done").glob("*ZSD_DAILY*"))
+    assert client.get("/api/customers", params={"q": "01066600033"}).json()["rows"]

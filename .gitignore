@@ -7,3 +7,4 @@ node_modules/
 *.duckdb
 *.duckdb.wal
 .env
+inbox/

@@ -6,6 +6,7 @@ from fastapi.staticfiles import StaticFiles
 
 from . import config, db
 from .api.pos import router as pos_router
+from .api.files import router as files_router
 from .api.routes import cleanup_stale_uploads, router
 from .auth import ensure_admin_exists
 
@@ -20,6 +21,8 @@ async def lifespan(app: FastAPI):
     # imports interrupted by a restart can never finish
     db.cursor().execute("UPDATE imports SET status='failed', message='Interrupted by a server "
                         "restart, please import the file again' WHERE status='running'")
+    from .core import feeds
+    feeds.start_scheduler()
     yield
     db.close()
 
@@ -28,6 +31,7 @@ app = FastAPI(title="Customers Platform", lifespan=lifespan, docs_url="/api/docs
               openapi_url="/api/openapi.json")
 app.include_router(router)
 app.include_router(pos_router)
+app.include_router(files_router)
 
 
 @app.middleware("http")

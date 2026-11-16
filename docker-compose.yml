@@ -49,6 +49,7 @@ services:
       TOKEN_HOURS: ${TOKEN_HOURS:-12}
     volumes:
       - appdata:/data          # logo, temporary uploads
+      - ./inbox:/data/inbox    # drop folder: files copied here (e.g. by SAP over SFTP) are imported
     ports:
       - "${APP_PORT:-1100}:1100"
 

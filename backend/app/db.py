@@ -169,6 +169,25 @@ ALTER TABLE products ADD COLUMN IF NOT EXISTS extra JSONB;              -- every
 -- column order of the last product file, to show / export the extra columns in that order
 
 
+-- automatic data feeds (SAP or any system): download a report from a URL at set times
+CREATE TABLE IF NOT EXISTS data_feeds (
+    id SERIAL PRIMARY KEY,
+    name TEXT NOT NULL,
+    url TEXT NOT NULL,
+    auth_type TEXT NOT NULL DEFAULT 'none',   -- none | basic | bearer | header
+    username TEXT,
+    secret TEXT,                               -- password / token (never sent back to the browser)
+    header_name TEXT,
+    insecure BOOLEAN NOT NULL DEFAULT FALSE,   -- accept a self-signed certificate (internal SAP)
+    times TEXT NOT NULL DEFAULT '06:30',       -- "06:30, 14:00" in the platform time zone
+    enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    last_run_at TIMESTAMP,
+    last_status TEXT,
+    last_message TEXT,
+    created_by TEXT,
+    created_at TIMESTAMP DEFAULT now()
+);
+
 -- branch list: code as used in the sales files / POS (e.g. CA28) -> readable name
 CREATE TABLE IF NOT EXISTS branches (
     code TEXT PRIMARY KEY,
